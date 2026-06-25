@@ -174,6 +174,11 @@ def run_demo(use_qwen: bool = False, pause_s: float = 1.5) -> None:
         # 8. Apply memory operations (includes profile weight adjustments)
         agent.apply_memory_ops(response, profile, episodic, semantic, current_session=1)
 
+        # Track interaction counts (without re-adjusting weights)
+        profile.total_interactions += 1
+        profile.class_counts[class_id] += 1
+        profile.updated_at = time.time()
+
         # 9. Store episode
         episodic.store(Episode(
             timestamp=time.time(),
