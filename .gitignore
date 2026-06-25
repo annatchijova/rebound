@@ -1,0 +1,36 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Entorno virtual
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data grandes
+data/raw/*.wav
+data/simulated/*.wav
+data/simulated/*.npy
+data/processed/*.npy
+models/checkpoints/*.pt
+models/checkpoints/*.pth
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+*.key
