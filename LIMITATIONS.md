@@ -32,10 +32,6 @@ real, no estimaciones ni intenciones de diseño.
   pero no integrado. Requiere DataLoader del modelo base y loop de
   fine-tuning por usuario. Diferido a v2.
 
-- **API cloud (src/cloud/)**: `api_server.py` y `deploy.py` movidos a
-  `future/cloud/`. Servidor FastAPI que presupone Alibaba Cloud ECS y
-  requiere DASHSCOPE_API_KEY. Contradice el alcance local del demo.
-  API key expuesta como argumento CLI. Diferido a v2.
 
 ## Extracción de features
 
