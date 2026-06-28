@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from src.models.classifier import ReboundCNN, count_parameters
 
@@ -53,6 +53,12 @@ class ReboundDataset(Dataset):
 
         self.distances = torch.from_numpy(data["distances"]).float().unsqueeze(1)
         # distances: (N, 1) — float32
+
+        self.config_ids = torch.from_numpy(
+            data["config_ids"] if "config_ids" in data.files
+            else np.arange(len(data["labels"]), dtype=np.int64)
+        ).long()
+        # config_ids: (N,) — int64
 
     def __len__(self) -> int:
         return len(self.labels)
@@ -97,21 +103,34 @@ def train(
     print(f"Device: {device}")
 
     full_dataset = ReboundDataset(data_path)
-    n_val = int(len(full_dataset) * val_split)
-    n_train = len(full_dataset) - n_val
 
-    train_ds, val_ds = random_split(
-        full_dataset,
-        [n_train, n_val],
-        generator=torch.Generator().manual_seed(42),
-    )
+    # Split por config_id: todas las muestras de un mismo RoomConfig
+    # van al mismo split. Evita data leakage.
+    config_ids_np = full_dataset.config_ids.numpy()
+    unique_configs = np.unique(config_ids_np)
+
+    rng_split = np.random.default_rng(42)
+    rng_split.shuffle(unique_configs)
+
+    n_val_configs = int(len(unique_configs) * val_split)
+    val_configs = set(unique_configs[:n_val_configs].tolist())
+
+    val_indices = [i for i, c in enumerate(config_ids_np)
+                   if int(c) in val_configs]
+    train_indices = [i for i, c in enumerate(config_ids_np)
+                     if int(c) not in val_configs]
+
+    train_ds = Subset(full_dataset, train_indices)
+    val_ds = Subset(full_dataset, val_indices)
+    n_train = len(train_indices)
+    n_val = len(val_indices)
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size)
 
     print(f"Train: {n_train}, Val: {n_val}")
 
-    model = ReboundCNN(n_classes=6).to(device)
+    model = ReboundCNN(n_classes=5).to(device)
     print(f"Parameters: {count_parameters(model):,}")
 
     class_criterion = nn.CrossEntropyLoss()

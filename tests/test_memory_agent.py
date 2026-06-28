@@ -8,14 +8,14 @@ import pytest
 
 from src.memory.agent import MockQwenMemoryAgent, AgentResponse
 from src.memory.episodic import Episode, EpisodicMemory
-from src.memory.profile import UserProfile
+from src.memory.profile import UserProfile, N_CLASSES
 from src.memory.semantic import SemanticMemory
 
 
 class TestUserProfile:
     def test_create_default(self):
         profile = UserProfile(user_id="test")
-        assert len(profile.class_weights) == 6
+        assert len(profile.class_weights) == N_CLASSES
         assert all(w == 1.0 for w in profile.class_weights)
 
     def test_update_implicit_advance(self):
@@ -37,7 +37,7 @@ class TestUserProfile:
     def test_get_prior_weights(self):
         profile = UserProfile(user_id="test")
         weights = profile.get_prior_weights()
-        assert weights.shape == (6,)
+        assert weights.shape == (N_CLASSES,)
         assert weights.dtype == np.float64
 
     def test_save_and_load(self, tmp_path):

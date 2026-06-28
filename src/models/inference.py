@@ -21,12 +21,13 @@ from numpy.typing import NDArray
 
 from src.features.spectral import extract_features
 from src.models.classifier import ReboundCNN
+from src.signal.stairs import detect_stair_periodicity
 from src.simulation.room_generator import SPACE_CLASSES
 
 
 def load_model(
     checkpoint_path: str,
-    n_classes: int = 6,
+    n_classes: int = 5,   # era 6
     device: str | None = None,
 ) -> tuple[ReboundCNN, dict[str, float], str]:
     """Load trained model and scaler from checkpoint.
@@ -119,13 +120,31 @@ def predict(
     confidence = float(probs[class_id])
     distance_m = float(dist_pred.squeeze().cpu())
 
+    # El detector corre siempre. El CNN no tiene clase "stairs",
+    # entonces el detector es la única vía de detección de escaleras.
+    stairs = detect_stair_periodicity(rir, sample_rate=sample_rate)
+
+    # Si el detector confirma escalera con confianza alta, override.
+    if stairs["is_stair"] and stairs["confidence"] >= 0.7:
+        final_class_name = "stairs"
+        final_confidence = float(stairs["confidence"])
+        override_applied = True
+    else:
+        final_class_name = SPACE_CLASSES[class_id]
+        final_confidence = confidence
+        override_applied = False
+
     return {
-        "class_name": SPACE_CLASSES[class_id],
-        "class_id": class_id,
-        "confidence": confidence,
+        "class_name": final_class_name,
+        "class_id": class_id,                          # del CNN, no override
+        "confidence": final_confidence,
+        "cnn_class_name": SPACE_CLASSES[class_id],     # lo que dijo el CNN
+        "cnn_confidence": confidence,                  # confianza del CNN
+        "override_applied": override_applied,
         "distance_m": distance_m,
         "probabilities": {
             SPACE_CLASSES[i]: float(round(probs[i], 4))
             for i in range(len(probs))
         },
+        "stairs_detection": stairs,
     }

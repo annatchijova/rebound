@@ -14,15 +14,21 @@ import numpy as np
 from numpy.typing import NDArray
 
 
-# Reference parameters — do not modify without regression test
+# CF y FM start en 8 kHz — motivo: respuesta plana de MEMS hasta ~15 kHz,
+# 8 kHz = 5.5 muestras/ciclo a 44100 Hz (margen seguro sobre Nyquist),
+# audible para todos los rangos de edad con audición funcional.
+# DESCARTADO: 20 kHz — aliasing (2.2 muestras/ciclo), atenuación por
+# filtro anti-aliasing de hardware, inaudible para adultos mayores.
+# DESCARTADO: 15 kHz — audible solo hasta ~35-40 años (presbiacusia).
+# El usuario no necesita escuchar el chirp; lo que importa es la captura.
 CHIRP_PARAMS = {
-    "cf_freq": 20_000,        # Hz — Doppler component
-    "fm_start": 20_000,       # Hz — sweep start (descending)
-    "fm_end": 1_000,          # Hz — sweep end (descending)
-    "cf_duration": 0.005,     # seconds
-    "fm_duration": 0.015,     # seconds
-    "sample_rate": 44_100,    # Hz
-    "amplitude": 0.8,         # 0–1
+    "cf_freq": 8_000,
+    "fm_start": 8_000,
+    "fm_end": 1_000,
+    "cf_duration": 0.005,
+    "fm_duration": 0.015,
+    "sample_rate": 44_100,
+    "amplitude": 0.8,
 }
 
 

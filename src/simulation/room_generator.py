@@ -1,13 +1,14 @@
 """
 Room Impulse Response (RIR) generation with pyroomacoustics.
 
-Simulates 6 classes of indoor spaces for classifier training:
+Simulates 5 classes of indoor spaces for classifier training:
 - open_space: large room, no nearby obstacles
 - nearby_wall: obstacle < 1.5 m in emission direction
 - doorway: narrow opening with characteristic spectral signature
 - corner: multiple reflections at angles
 - corridor: parallel lateral reflections
-- stairs: periodic echoes from step geometry
+
+Stairs are detected separately via detect_stair_periodicity (src/signal/stairs.py).
 """
 
 from __future__ import annotations
@@ -26,7 +27,6 @@ SPACE_CLASSES = {
     2: "doorway",
     3: "corner",
     4: "corridor",
-    5: "stairs",
 }
 
 CLASS_NAMES_TO_ID = {v: k for k, v in SPACE_CLASSES.items()}
@@ -235,36 +235,6 @@ def random_corridor(rng: np.random.Generator) -> RoomConfig:
     )
 
 
-def random_stairs(rng: np.random.Generator) -> RoomConfig:
-    """Generate config for staircase.
-
-    Simulated as a narrow, tall room with low absorption — the stair
-    geometry produces periodic echoes that are synthesized separately
-    in stairs.py. Here we provide the room context.
-    """
-    width = rng.uniform(1.0, 2.5)     # stairwell width
-    depth = rng.uniform(3.0, 6.0)     # horizontal run
-    height = rng.uniform(3.0, 5.0)    # tall ceiling
-
-    src_x = width / 2 + rng.uniform(-0.2, 0.2)
-    src_y = rng.uniform(0.5, 1.5)     # near bottom of stairs
-
-    mic_x = src_x + rng.uniform(-0.03, 0.03)
-    mic_y = src_y + rng.uniform(-0.03, 0.03)
-
-    distance = rng.uniform(0.3, 1.5)  # distance to first step
-
-    return RoomConfig(
-        room_dim=[width, depth, height],
-        source_pos=[src_x, src_y, 1.5],
-        mic_pos=[mic_x, mic_y, 1.5],
-        materials={"absorption": rng.uniform(0.05, 0.2)},  # hard surfaces
-        class_id=5,
-        class_name="stairs",
-        distance_m=distance,
-    )
-
-
 # Generator map by class
 GENERATORS = {
     0: random_open_space,
@@ -272,7 +242,6 @@ GENERATORS = {
     2: random_doorway,
     3: random_corner,
     4: random_corridor,
-    5: random_stairs,
 }
 
 

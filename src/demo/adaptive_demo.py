@@ -44,6 +44,7 @@ from src.simulation.room_generator import (
 
 
 # Simulated navigation sequence (class_id, user_action)
+# Solo 5 clases CNN. Las escaleras se demuestran en demo_stairs() aparte.
 NAVIGATION_SEQUENCE = [
     (0, "advance"),      # open space — advances
     (0, "advance"),      # open space — continues
@@ -55,19 +56,13 @@ NAVIGATION_SEQUENCE = [
     (2, "advance"),      # doorway — crosses
     (3, "retreat"),      # corner — retreats
     (3, "hesitate"),     # corner — hesitates
-    (5, "hesitate"),     # stairs — hesitates (new environment)
-    (5, "advance"),      # stairs — advances carefully
     (4, "advance"),      # corridor — advances
     (1, "hesitate"),     # nearby wall — hesitates
     (2, "advance"),      # doorway — crosses (now with confidence)
     (0, "advance"),      # open space — advances
     (3, "advance"),      # corner — now advances (learned)
-    (5, "advance"),      # stairs — confident now
     (1, "advance"),      # nearby wall — no longer hesitates
     (2, "advance"),      # doorway — confident
-    (4, "advance"),      # corridor
-    (3, "advance"),      # corner — fully adapted
-    (0, "advance"),      # open space
 ]
 
 
@@ -104,20 +99,15 @@ def run_demo(use_qwen: bool = False, pause_s: float = 1.5) -> None:
     plt.show()
 
     weight_history: list[list[float]] = []
-    class_names = [SPACE_CLASSES[i] for i in range(6)]
-    colors = ["#2196F3", "#F44336", "#4CAF50", "#FF9800", "#9C27B0", "#795548"]
+    class_names = [SPACE_CLASSES[i] for i in range(5)]
+    colors = ["#2196F3", "#F44336", "#4CAF50", "#FF9800", "#9C27B0"]
 
     for step, (class_id, action) in enumerate(NAVIGATION_SEQUENCE):
         # 1. Generate environment
         config = GENERATORS[class_id](rng)
 
         # 2. Simulate capture
-        if class_id == 5:
-            # For stairs, use synthetic stair RIR
-            n_steps = rng.integers(5, 12)
-            rir = synthesize_stair_rir(n_steps=n_steps, sample_rate=sr)
-        else:
-            rir = generate_rir(config, sample_rate=sr, max_order=8)
+        rir = generate_rir(config, sample_rate=sr, max_order=8)
 
         captured = simulate_capture(rir, chirp, noise_level=0.005, seed=step)
 
@@ -132,17 +122,7 @@ def run_demo(use_qwen: bool = False, pause_s: float = 1.5) -> None:
         dist = estimate_distance(estimated_rir, sr)
         echo_str = estimate_echo_strength(estimated_rir, sr)
 
-        # 5. Stair-specific analysis
-        stair_info = None
-        if class_id == 5:
-            stair_result = detect_stair_periodicity(estimated_rir, sr)
-            if stair_result["is_stair"]:
-                stair_info = estimate_stair_geometry(
-                    stair_result["echo_spacing_m"],
-                    stair_result["n_steps_detected"],
-                )
-
-        # 6. Prediction (mock — in production would be CNN)
+        # 5. Prediction (mock — in production would be CNN)
         confidence = 0.7 + rng.uniform(0, 0.25)
         prediction = {
             "class": SPACE_CLASSES[class_id],
@@ -167,11 +147,7 @@ def run_demo(use_qwen: bool = False, pause_s: float = 1.5) -> None:
             session_id=1,
         )
 
-        # Override instruction with stair message if applicable
-        if stair_info:
-            response.navigation_instruction = build_stair_message(stair_info, "undetermined")
-
-        # 8. Apply memory operations (includes profile weight adjustments)
+        # 7. Apply memory operations (includes profile weight adjustments)
         agent.apply_memory_ops(response, profile, episodic, semantic, current_session=1)
 
         # Track interaction counts (without re-adjusting weights)
@@ -225,9 +201,74 @@ def run_demo(use_qwen: bool = False, pause_s: float = 1.5) -> None:
         print(f"    {key}: {entry.value} (conf={entry.confidence:.2f})")
     print(f"\nEpisodic memory: {len(episodic)} active episodes")
 
+    # Demostracion adicional: detector de escaleras (independiente del CNN)
+    demo_stairs(sr=sr)
+
     plt.ioff()
     plt.show()
     agent.close()
+
+
+def demo_stairs(sr: int = 44_100) -> None:
+    """Demostración del detector de escaleras + override.
+
+    Genera 3 escenarios sintéticos de escalera, los pasa por el pipeline
+    completo (chirp -> capture -> deconvolve -> predict) y verifica que
+    el override del detector dispara class_name="stairs".
+
+    Requiere que best_model.pt esté entrenado con 5 clases.
+    """
+    print("\n" + "=" * 60)
+    print("DEMO: STAIRS DETECTION via two-pass detector")
+    print("=" * 60)
+
+    from src.models.inference import load_model, predict
+
+    try:
+        model, scaler, device = load_model("models/checkpoints/best_model.pt")
+    except FileNotFoundError:
+        print("\nNo hay modelo entrenado. Saltando demo de escaleras.")
+        print("Para correr: python3 -m src.models.train --data data/processed/dataset.npz")
+        return
+
+    chirp = generate_chirp()
+
+    scenarios = [
+        {"n_steps": 5, "label": "escalera corta (5 escalones)"},
+        {"n_steps": 8, "label": "escalera tipica (8 escalones)"},
+        {"n_steps": 12, "label": "escalera larga (12 escalones)"},
+    ]
+
+    print(f"\nSNR esperado en captured signal: ~30 dB (noise_level=0.01)")
+    print()
+
+    aciertos = 0
+    for sc in scenarios:
+        rir = synthesize_stair_rir(
+            n_steps=sc["n_steps"], sample_rate=sr, rir_length_s=0.15,
+        )
+        captured = simulate_capture(rir, chirp, noise_level=0.01, seed=42)
+        rir_rec = adaptive_wiener(captured, chirp, snr_estimate_db=30.0)
+
+        result = predict(model, scaler, rir_rec, sample_rate=sr, device=device)
+
+        is_correct = result["class_name"] == "stairs"
+        if is_correct:
+            aciertos += 1
+
+        print(f"  {sc['label']}:")
+        print(f"    CNN dijo: {result['cnn_class_name']} "
+              f"(confianza {result['cnn_confidence']:.2f})")
+        print(f"    Detector: is_stair={result['stairs_detection']['is_stair']}, "
+              f"confianza {result['stairs_detection']['confidence']:.2f}, "
+              f"{result['stairs_detection']['n_steps_detected']} escalones")
+        print(f"    Override: {result['override_applied']} -> "
+              f"class_name='{result['class_name']}'")
+        print(f"    Resultado: {'OK' if is_correct else 'FAIL'}")
+        print()
+
+    print(f"Detector de escaleras: {aciertos}/{len(scenarios)} aciertos")
+    print("Limitacion conocida: detector requiere SNR > 28 dB (L-010 en LIMITATIONS.md)")
 
 
 def _update_plots(
@@ -263,7 +304,7 @@ def _update_plots(
     ax_classification.clear()
     weights = profile.get_prior_weights()
     conf = prediction["confidence"]
-    probs = np.zeros(6)
+    probs = np.zeros(5)
     probs[list(SPACE_CLASSES.keys())[list(SPACE_CLASSES.values()).index(prediction["class"])]] = conf
     adjusted = probs * weights
     if adjusted.sum() > 0:
@@ -283,7 +324,7 @@ def _update_plots(
     ax_profile.clear()
     if weight_history:
         arr = np.array(weight_history)
-        for i in range(6):
+        for i in range(5):
             ax_profile.plot(arr[:, i], label=class_names[i], color=colors[i], linewidth=2)
         ax_profile.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5)
         ax_profile.legend(fontsize=7, loc="upper left")
