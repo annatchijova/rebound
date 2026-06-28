@@ -5,6 +5,9 @@ Inspired by bat CF-FM echolocation. Built for the **Global AI Hackathon Series w
 
 **Track: MemoryAgent** — persistent adaptive memory across multi-turn, cross-session interactions.
 
+**Author & Developer**
+This project was designed, architected, and developed in full by **Olga Vasilieva**. The GitHub repository is hosted under the account of Anna Tchijova (her daughter) for technical convenience. Anna Tchijova had no participation in the code, design, or technical decisions of this project.
+
 ---
 
 ## What it does
