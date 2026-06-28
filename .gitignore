@@ -41,3 +41,5 @@ data/processed/*.json
 models/checkpoints/*.json
 rebound.zip
 data/
+frontend/node_modules/
+frontend/node_modules
