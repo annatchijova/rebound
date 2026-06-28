@@ -1,3 +1,8 @@
+# DEFERRED — not integrated in current system (Bloque 2, TODO-3)
+# FastAPI server targeting Alibaba Cloud ECS / Function Compute.
+# Requires DASHSCOPE_API_KEY. Contradicts the local-only scope
+# of the hackathon demo. Deferred to v2.
+
 """
 FastAPI server for the Memory Agent on Alibaba Cloud.
 

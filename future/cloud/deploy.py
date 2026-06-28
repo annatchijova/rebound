@@ -1,3 +1,9 @@
+# DEFERRED — not integrated in current system (Bloque 2, TODO-3)
+# Deploy script for Alibaba Cloud ECS. Contradicts the local-only
+# scope of the hackathon demo. DASHSCOPE_API_KEY passed as CLI
+# argument (visible in ps aux). Deferred to v2 with proper
+# secrets management.
+
 """
 Script de deploy para Alibaba Cloud ECS.
 

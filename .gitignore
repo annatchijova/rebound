@@ -34,3 +34,10 @@ Thumbs.db
 # Env
 .env
 *.key
+
+# Dataset y modelos generados
+data/processed/*.npz
+data/processed/*.json
+models/checkpoints/*.json
+rebound.zip
+data/
