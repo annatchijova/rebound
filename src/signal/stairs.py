@@ -39,27 +39,27 @@ STAIR_PRIOR = {
 def detect_stair_periodicity(
     rir: NDArray[np.float64],
     sample_rate: int,
+    prominence_high: float = 0.15,
+    prominence_low: float = 0.05,
+    search_window_frac: float = 0.2,
 ) -> dict[str, bool | float | int]:
     """Analyze extracted RIR for periodic echo pattern indicating stairs.
 
-    Args:
-        rir: Room Impulse Response extracted by deconvolution.py
-        sample_rate: sampling rate in Hz
+    Two-pass algorithm:
+        Pass 1: detect strong peaks with high prominence — close stairs.
+        Pass 2: if Pass 1 confirms periodicity, search for weaker peaks
+                at predicted positions, extending the count of detected
+                stairs without introducing false positives.
+
+    Validated empirically (see BLOQUE_1.md): SNR > 35 dB required.
 
     Returns:
         {
             "is_stair": bool,
             "confidence": float,         # 0.0 – 1.0
-            "echo_spacing_m": float,     # distance between periodic echoes
-            "n_steps_detected": int,     # number of steps detected
+            "echo_spacing_m": float,
+            "n_steps_detected": int,
         }
-
-    Method:
-        1. Autocorrelation of the RIR
-        2. Peak detection with scipy.signal.find_peaks
-        3. Verify uniform spacing (coefficient of variation < 0.15)
-        4. Compute distance: spacing_samples / sample_rate * speed_of_sound / 2
-        5. Verify distance falls within worldwide standard tread range
     """
     result: dict[str, bool | float | int] = {
         "is_stair": False,
@@ -68,54 +68,63 @@ def detect_stair_periodicity(
         "n_steps_detected": 0,
     }
 
-    # Normalize RIR
     rir_abs = np.abs(rir)
     rir_norm = rir_abs / (np.max(rir_abs) + 1e-12)
 
-    # Expected lag range for stair treads (round-trip time)
     tread_min = STAIR_PRIOR["tread_m"] - STAIR_PRIOR["tread_tolerance"]
     tread_max = STAIR_PRIOR["tread_m"] + STAIR_PRIOR["tread_tolerance"]
     lag_min = int(2 * tread_min / SPEED_OF_SOUND * sample_rate)
-    lag_max = int(2 * tread_max / SPEED_OF_SOUND * sample_rate)
-
-    # Step 1: Find peaks directly in the RIR (stair echoes are distinct peaks)
     min_start = max(lag_min // 2, 3)
-    peaks, _ = find_peaks(
+
+    # PASS 1: strong peaks
+    peaks_strong, _ = find_peaks(
         rir_norm[min_start:],
-        prominence=0.02,
+        prominence=prominence_high,
         distance=lag_min // 2,
     )
-    peaks = peaks + min_start
+    peaks_strong = peaks_strong + min_start
 
-    if len(peaks) < 3:
+    if len(peaks_strong) < 3:
         return result
 
-    # Step 2: Check spacing uniformity between consecutive peaks
-    spacings = np.diff(peaks)
-    mean_spacing = np.mean(spacings)
+    spacings = np.diff(peaks_strong)
+    mean_spacing = float(np.mean(spacings))
     if mean_spacing < 1:
         return result
 
-    cv = float(np.std(spacings) / mean_spacing)  # coefficient of variation
-
-    if cv > 0.20:
-        return result
-
-    # Step 3: Convert mean spacing to distance
+    cv = float(np.std(spacings) / mean_spacing)
     echo_spacing_m = float(mean_spacing / sample_rate * SPEED_OF_SOUND / 2)
 
-    # Step 4: Check against stair prior
-    within_range = tread_min <= echo_spacing_m <= tread_max
+    # Reject if Pass 1 doesn't show stair-like pattern
+    if cv > 0.20 or not (tread_min <= echo_spacing_m <= tread_max):
+        return result
 
-    n_steps = len(peaks)
+    # PASS 2: extend with weaker peaks at predicted positions
+    extended_peaks = list(peaks_strong)
+    search_window = int(mean_spacing * search_window_frac)
+    next_expected = peaks_strong[-1] + int(mean_spacing)
 
-    # Confidence: periodicity regularity, range match, number of steps
+    while next_expected + search_window < len(rir_norm):
+        start = max(0, next_expected - search_window)
+        end = min(len(rir_norm), next_expected + search_window)
+        window = rir_norm[start:end]
+
+        local_peaks, _ = find_peaks(window, prominence=prominence_low)
+        if len(local_peaks) > 0:
+            absolute = local_peaks + start
+            best_idx = int(np.argmin(np.abs(absolute - next_expected)))
+            extended_peaks.append(int(absolute[best_idx]))
+            next_expected = absolute[best_idx] + int(mean_spacing)
+        else:
+            break
+
+    n_steps = len(extended_peaks)
+
     periodicity_score = max(0, 1.0 - cv / 0.20)
-    range_score = 1.0 if within_range else max(0, 1.0 - abs(echo_spacing_m - STAIR_PRIOR["tread_m"]) / 0.1)
     count_score = min(1.0, n_steps / 5.0)
-    confidence = periodicity_score * 0.4 + range_score * 0.4 + count_score * 0.2
+    confidence = periodicity_score * 0.5 + count_score * 0.5
 
-    result["is_stair"] = confidence > 0.5
+    result["is_stair"] = True
     result["confidence"] = float(round(confidence, 3))
     result["echo_spacing_m"] = float(round(echo_spacing_m, 4))
     result["n_steps_detected"] = int(n_steps)

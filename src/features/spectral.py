@@ -24,7 +24,7 @@ def compute_mel_spectrogram(
     hop_length: int = 128,
     n_mels: int = 64,
     fmin: float = 500.0,
-    fmax: float | None = None,
+    fmax: float | None = 9_000,  # era None → sr/2 = 22050
 ) -> NDArray[np.float32]:
     """Compute mel spectrogram of the signal.
 

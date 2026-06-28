@@ -32,7 +32,7 @@ class ReboundCNN(nn.Module):
         self,
         n_mels: int = 64,
         n_frames: int = 32,
-        n_classes: int = 6,
+        n_classes: int = 5,   # era 6
     ):
         super().__init__()
 
