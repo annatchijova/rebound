@@ -1,3 +1,8 @@
+# DEFERRED — not integrated in current system (Bloque 2, TODO-2)
+# EWC requires a base DataLoader and a per-user fine-tuning loop,
+# both out of scope for the hackathon demo. Planned for v2.
+# See LIMITATIONS.md for context.
+
 """
 Elastic Weight Consolidation (EWC) to prevent catastrophic forgetting.
 
