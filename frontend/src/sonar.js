@@ -2,7 +2,7 @@
  * REBOUND Sonar Engine — Web Audio API
  *
  * Handles chirp playback through speaker + simultaneous mic recording.
- * Returns the captured audio buffer for server-side processing.
+ * Compatible with Chrome (Android) and Safari (iOS).
  */
 
 const CAPTURE_DURATION_S = 0.15;
@@ -16,31 +16,37 @@ export class SonarEngine {
     this.ready = false;
   }
 
-  /**
-   * Initialize: request mic permission + load chirp from server.
-   */
   async init(backendUrl) {
+    // AudioContext: Chrome uses AudioContext, Safari uses webkitAudioContext
     const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) throw new Error("Web Audio API not supported");
     this.audioCtx = new AC();
 
-    // Request microphone
+    // Request microphone — don't constrain sampleRate (Safari ignores it)
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: false,
-        sampleRate: 44100,
       },
     });
 
     // Load chirp from backend
-    const resp = await fetch(`${backendUrl}/chirp`);
+    const resp = await fetch(backendUrl + "/chirp");
     const data = await resp.json();
     this.chirpSampleRate = data.sample_rate;
 
-    // Decode base64 float64 chirp into AudioBuffer
-    const raw = Uint8Array.from(atob(data.chirp_base64), (c) => c.charCodeAt(0));
-    const float64 = new Float64Array(raw.buffer);
+    // Decode base64 chirp — Safari-safe (no Float64Array alignment issues)
+    const binaryStr = atob(data.chirp_base64);
+    const len = binaryStr.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+    // Copy to aligned buffer for Float64Array
+    const aligned = new ArrayBuffer(bytes.length);
+    new Uint8Array(aligned).set(bytes);
+    const float64 = new Float64Array(aligned);
+
     const float32 = new Float32Array(float64.length);
     for (let i = 0; i < float64.length; i++) float32[i] = float64[i];
 
@@ -50,93 +56,90 @@ export class SonarEngine {
     this.ready = true;
   }
 
-  /**
-   * Emit chirp + record echo. Returns Float64Array of captured audio.
-   */
   async capture() {
     if (!this.ready) throw new Error("SonarEngine not initialized");
 
-    // Resume context if suspended (mobile autoplay policy)
     if (this.audioCtx.state === "suspended") {
       await this.audioCtx.resume();
     }
 
-    const sampleRate = this.audioCtx.sampleRate;
-    const captureSamples = Math.ceil(CAPTURE_DURATION_S * sampleRate);
+    var sampleRate = this.audioCtx.sampleRate;
+    var captureSamples = Math.ceil(CAPTURE_DURATION_S * sampleRate);
+    var audioCtx = this.audioCtx;
+    var stream = this.stream;
+    var chirpBuffer = this.chirpBuffer;
 
-    return new Promise((resolve, reject) => {
-      // Set up recorder via ScriptProcessorNode (wider browser support)
-      const source = this.audioCtx.createMediaStreamSource(this.stream);
-      const processor = this.audioCtx.createScriptProcessor(4096, 1, 1);
-      const chunks = [];
-      let samplesCollected = 0;
+    return new Promise(function (resolve) {
+      var source = audioCtx.createMediaStreamSource(stream);
+      var bufferSize = 4096;
+      var processor = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+      var chunks = [];
+      var samplesCollected = 0;
 
-      processor.onaudioprocess = (e) => {
-        const input = e.inputBuffer.getChannelData(0);
-        chunks.push(new Float32Array(input));
+      processor.onaudioprocess = function (e) {
+        var input = e.inputBuffer.getChannelData(0);
+        var copy = new Float32Array(input.length);
+        copy.set(input);
+        chunks.push(copy);
         samplesCollected += input.length;
+
         if (samplesCollected >= captureSamples) {
-          // Done recording
           source.disconnect();
           processor.disconnect();
 
-          // Merge chunks
-          const total = new Float32Array(samplesCollected);
-          let offset = 0;
-          for (const chunk of chunks) {
-            total.set(chunk, offset);
-            offset += chunk.length;
+          var total = new Float32Array(samplesCollected);
+          var offset = 0;
+          for (var i = 0; i < chunks.length; i++) {
+            total.set(chunks[i], offset);
+            offset += chunks[i].length;
           }
 
-          // Trim to exact capture length
-          const trimmed = total.slice(0, captureSamples);
+          var trimmed = total.slice(0, captureSamples);
+          var f64 = new Float64Array(trimmed.length);
+          for (var j = 0; j < trimmed.length; j++) f64[j] = trimmed[j];
 
-          // Convert to Float64Array for server
-          const f64 = new Float64Array(trimmed.length);
-          for (let i = 0; i < trimmed.length; i++) f64[i] = trimmed[i];
-
-          resolve({ audio: f64, sampleRate });
+          resolve({ audio: f64, sampleRate: sampleRate });
         }
       };
 
       source.connect(processor);
-      processor.connect(this.audioCtx.destination);
+      processor.connect(audioCtx.destination);
 
-      // Play chirp through speaker
-      const chirpSource = this.audioCtx.createBufferSource();
-      chirpSource.buffer = this.chirpBuffer;
-      chirpSource.connect(this.audioCtx.destination);
-      chirpSource.start();
+      // Play chirp
+      var chirpSource = audioCtx.createBufferSource();
+      chirpSource.buffer = chirpBuffer;
+      chirpSource.connect(audioCtx.destination);
+      chirpSource.start(0);
     });
   }
 
-  /**
-   * Send captured audio to POST /predict.
-   */
-  async predict(backendUrl, audio, sampleRate, gyroPitch = 0) {
-    // Encode as base64
-    const bytes = new Uint8Array(audio.buffer);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    const b64 = btoa(binary);
+  async predict(backendUrl, audio, sampleRate, gyroPitch) {
+    var bytes = new Uint8Array(audio.buffer);
+    var binary = "";
+    var chunkSize = 8192;
+    for (var i = 0; i < bytes.length; i += chunkSize) {
+      var slice = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+      binary += String.fromCharCode.apply(null, slice);
+    }
+    var b64 = btoa(binary);
 
-    const resp = await fetch(`${backendUrl}/predict`, {
+    var resp = await fetch(backendUrl + "/predict", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         audio_base64: b64,
         sample_rate: sampleRate,
-        gyroscope_pitch_deg: gyroPitch,
+        gyroscope_pitch_deg: gyroPitch || 0,
       }),
     });
 
-    if (!resp.ok) throw new Error(`Predict failed: ${resp.status}`);
+    if (!resp.ok) throw new Error("Predict failed: " + resp.status);
     return resp.json();
   }
 
   destroy() {
     if (this.stream) {
-      this.stream.getTracks().forEach((t) => t.stop());
+      this.stream.getTracks().forEach(function (t) { t.stop(); });
     }
     if (this.audioCtx) {
       this.audioCtx.close();
@@ -144,14 +147,10 @@ export class SonarEngine {
   }
 }
 
-/**
- * Haptic feedback via navigator.vibrate().
- * Maps REBOUND haptic patterns to vibration sequences.
- */
 export function vibrate(pattern) {
   if (!navigator.vibrate) return;
 
-  const patterns = {
+  var patterns = {
     none: [],
     single_pulse: [100],
     double_pulse: [80, 60, 80],
@@ -161,34 +160,38 @@ export function vibrate(pattern) {
     stair_alert: [200, 100, 200, 100, 400],
   };
 
-  const seq = patterns[pattern] || [100];
-  navigator.vibrate(seq);
+  navigator.vibrate(patterns[pattern] || [100]);
 }
 
-/**
- * Gyroscope pitch reading via DeviceOrientationEvent.
- * Returns current pitch angle in degrees.
- */
 export class GyroReader {
   constructor() {
     this.pitch = 0;
-    this._handler = (e) => {
-      // beta = front-back tilt (-180 to 180)
-      this.pitch = e.beta || 0;
-    };
+    this._handler = null;
   }
 
   async start() {
-    // iOS 13+ requires permission
-    if (typeof DeviceOrientationEvent.requestPermission === "function") {
-      const perm = await DeviceOrientationEvent.requestPermission();
-      if (perm !== "granted") return false;
+    var self = this;
+    this._handler = function (e) {
+      self.pitch = e.beta || 0;
+    };
+
+    try {
+      if (typeof DeviceOrientationEvent !== "undefined" &&
+          typeof DeviceOrientationEvent.requestPermission === "function") {
+        var perm = await DeviceOrientationEvent.requestPermission();
+        if (perm !== "granted") return false;
+      }
+    } catch (e) {
+      // Permission API not available — continue without gyro
     }
+
     window.addEventListener("deviceorientation", this._handler);
     return true;
   }
 
   stop() {
-    window.removeEventListener("deviceorientation", this._handler);
+    if (this._handler) {
+      window.removeEventListener("deviceorientation", this._handler);
+    }
   }
 }
