@@ -17,15 +17,16 @@ export class SonarEngine {
   }
 
   async init(backendUrl) {
-    // AudioContext: use globalThis to avoid minifier renaming
-    var g = typeof globalThis !== "undefined" ? globalThis : typeof self !== "undefined" ? self : window;
-    var ACtor = g["AudioContext"] || g["webkitAudioContext"];
-    if (!ACtor) {
-      throw new Error("No AudioContext. Keys: " +
-        Object.keys(g).filter(function(k) { return k.toLowerCase().indexOf("audio") >= 0; }).join(",") +
-        ". Secure: " + g.isSecureContext);
+    // Create AudioContext — try direct construction (Safari won't enumerate it)
+    try {
+      this.audioCtx = new AudioContext();
+    } catch (_e1) {
+      try {
+        this.audioCtx = new webkitAudioContext();
+      } catch (_e2) {
+        throw new Error("AudioContext failed: " + _e1.message + " / " + _e2.message);
+      }
     }
-    this.audioCtx = new ACtor();
 
     // Request microphone — don't constrain sampleRate (Safari ignores it)
     this.stream = await navigator.mediaDevices.getUserMedia({
