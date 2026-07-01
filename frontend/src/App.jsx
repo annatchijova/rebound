@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 
-const CLASSES = ["open_space", "nearby_wall", "doorway", "corner", "corridor"];
-const CLASS_LABELS = ["Open space", "Nearby wall", "Doorway", "Corner", "Corridor"];
-const CLASS_COLORS = ["#00D4FF", "#F59E0B", "#10B981", "#F97316", "#A78BFA"];
+const CLASSES = ["open_space", "nearby_wall", "doorway", "corner", "corridor", "stairs"];
+const CLASS_LABELS = ["Open space", "Nearby wall", "Doorway", "Corner", "Corridor", "Stairs"];
+const CLASS_COLORS = ["#00D4FF", "#F59E0B", "#10B981", "#F97316", "#A78BFA", "#EF4444"];
 
 const SEQUENCE = [
   { class_id: 0, action: "advance",  dist: 4.2, rt60: 0.45, centroid: 7200, echo: -18 },
@@ -354,7 +354,7 @@ export default function ReboundUI() {
 
         {/* Right: Memory state */}
         <div style={{ background: "#141824", borderRadius: 10, padding: 16, border: "1px solid #1E2A3A", display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ fontSize: 11, color: "#64748B", textTransform: "uppercase", letterSpacing: 1 }}>Memory agent · Qwen-Max</div>
+          <div style={{ fontSize: 11, color: "#64748B", textTransform: "uppercase", letterSpacing: 1 }}>Memory agent · Qwen-Plus</div>
           <div style={{ display: "flex", gap: 16 }}>
             <div>
               <div style={{ fontSize: 10, color: "#64748B" }}>Episodic</div>
