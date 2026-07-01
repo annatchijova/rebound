@@ -99,7 +99,7 @@ export default function Live({ backendUrl }) {
 
         // Wait before next scan
         if (runningRef.current && !cancelled) {
-          await new Promise(function(r) { setTimeout(r, 2000); });
+          await new Promise(function(r) { setTimeout(r, 1000); });
         }
       }
     }
