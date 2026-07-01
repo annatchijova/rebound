@@ -20,7 +20,8 @@ export class SonarEngine {
    * Initialize: request mic permission + load chirp from server.
    */
   async init(backendUrl) {
-    this.audioCtx = new AudioContext();
+    const AC = window.AudioContext || window.webkitAudioContext;
+    this.audioCtx = new AC();
 
     // Request microphone
     this.stream = await navigator.mediaDevices.getUserMedia({
