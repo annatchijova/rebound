@@ -6,7 +6,7 @@ import Live from './Live.jsx'
 function Root() {
   const params = new URLSearchParams(window.location.search);
   const mode = params.get("mode") || "auto";
-  const backend = params.get("backend") || "http://localhost:8000";
+  const backend = params.get("backend") || window.location.origin;
 
   // Auto-detect: mobile → live, desktop → demo dashboard
   const isMobile = mode === "live" || (mode === "auto" && /Mobi|Android|iPhone/i.test(navigator.userAgent));

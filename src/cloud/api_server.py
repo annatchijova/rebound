@@ -31,6 +31,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.memory.agent import AsyncQwenMemoryAgent, MockAsyncQwenMemoryAgent
@@ -392,3 +393,9 @@ async def health() -> dict:
         "agent_type": type(_state.get("agent", None)).__name__,
         "active_users": len(_state.get("profiles", {})),
     }
+
+
+# Serve frontend PWA — must be LAST (catch-all for static files)
+_static_dir = Path(__file__).resolve().parent.parent.parent / "static"
+if _static_dir.is_dir():
+    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="frontend")
