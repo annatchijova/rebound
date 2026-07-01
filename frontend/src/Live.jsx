@@ -16,16 +16,18 @@ var HAPTIC_FOR_CLASS = {
   corner: "continuous_low", corridor: "single_pulse", stairs: "stair_alert",
 };
 
-// TTS: warm up on first user gesture, then use for all subsequent calls
-var ttsReady = false;
-function warmUpTTS() {
+// TTS — dos vías:
+// speakNow: SOLO dentro del handler del gesto, sin awaits antes. Desbloquea el motor.
+// speak: para después de awaits, con el motor ya desbloqueado por speakNow.
+function speakNow(text) {
   try {
     var s = window["speechSynthesis"];
     if (!s) return;
-    // Speak empty string to unlock TTS on mobile
-    var u = new (window["SpeechSynthesisUtterance"])("");
+    s.resume();
+    var u = new (window["SpeechSynthesisUtterance"])(text);
+    u.lang = "en-US";
+    u.rate = 1.1;
     s.speak(u);
-    ttsReady = true;
   } catch (_) {}
 }
 
@@ -34,10 +36,11 @@ function speak(text) {
     var s = window["speechSynthesis"];
     if (!s) return;
     s.cancel();
+    s.resume();
     var u = new (window["SpeechSynthesisUtterance"])(text);
-    u.rate = 1.1;
     u.lang = "en-US";
-    s.speak(u);
+    u.rate = 1.1;
+    setTimeout(function () { s.speak(u); }, 80);
   } catch (_) {}
 }
 
@@ -56,20 +59,23 @@ export default function Live({ backendUrl }) {
   var [result, setResult] = useState(null);
   var [scanCount, setScanCount] = useState(0);
   var [agentResult, setAgentResult] = useState(null);
+  var [debug, setDebug] = useState("");
 
   var engineRef = useRef(null);
   var gyroRef = useRef(null);
   var scanningRef = useRef(false);
+  var initRef = useRef(false);
 
   // INITIALIZE — first tap
   async function handleStart() {
-    // Warm up TTS immediately in user gesture context
-    warmUpTTS();
-
+    if (initRef.current) return;
+    initRef.current = true;
+    speakNow("Starting");
     setPhase("init");
     setError("");
+    var engine = null;
     try {
-      var engine = new SonarEngine();
+      engine = new SonarEngine();
       await engine.init(backendUrl);
       engineRef.current = engine;
 
@@ -77,13 +83,14 @@ export default function Live({ backendUrl }) {
       await gyro.start();
       gyroRef.current = gyro;
 
-      // Keep screen on
       try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch (_) {}
 
       speak("Ready. Tap to scan.");
       setPhase("ready");
     } catch (e) {
-      setError(e.message);
+      if (engine) { try { engine.destroy(); } catch (_) {} }
+      initRef.current = false;
+      setError(String(e && e.message ? e.message : e));
       setPhase("error");
     }
   }
@@ -91,51 +98,57 @@ export default function Live({ backendUrl }) {
   // SCAN — every subsequent tap
   async function handleTap() {
     if (phase === "start") { handleStart(); return; }
-    if (phase === "error") { handleStart(); return; }
+    if (phase === "error") {
+      if (!engineRef.current) { handleStart(); return; }
+      setError("");
+      setPhase("ready");
+      return;
+    }
     if (phase === "init") return;
     if (scanningRef.current) return;
     scanningRef.current = true;
 
-    // Warm up TTS in gesture context BEFORE async work
-    warmUpTTS();
-
+    speakNow("Scanning");
     setPhase("scanning");
 
     try {
+      var t0 = Date.now();
       var cap = await engineRef.current.capture();
       var pitch = gyroRef.current ? gyroRef.current.pitch : 0;
       var pred = await engineRef.current.predict(backendUrl, cap.audio, cap.sampleRate, pitch);
+      var ms = Date.now() - t0;
 
       setResult(pred);
-      setScanCount(function(c) { return c + 1; });
+      setAgentResult(null);
+      setScanCount(function (c) { return c + 1; });
+      setPhase("result");
       vibrate(HAPTIC_FOR_CLASS[pred.class_name] || "single_pulse");
+      speak(buildSpoken(pred, ""));
+      setDebug(
+        pred.class_name + " " + Math.round(pred.confidence * 100) + "% · SNR " +
+        pred.snr_db + " dB · " + ms + " ms"
+      );
 
-      // Memory agent
-      var agentText = "";
-      try {
-        var resp = await fetch(backendUrl + "/process", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            user_id: "mobile_user",
-            prediction: { class_name: pred.class_name, confidence: pred.confidence, distance_m: pred.distance_m },
-            features_summary: pred.features_summary,
-            user_action: "advance", session_id: 1,
-          }),
-        });
-        if (resp.ok) {
-          var data = await resp.json();
-          setAgentResult(data);
-          agentText = data.navigation_instruction;
-        }
-      } catch (_) {}
-
-      // Speak result
-      speak(buildSpoken(pred, agentText));
-      setPhase("result");
+      // Memory agent en segundo plano
+      fetch(backendUrl + "/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: "mobile_user",
+          prediction: { class_name: pred.class_name, confidence: pred.confidence, distance_m: pred.distance_m },
+          features_summary: pred.features_summary,
+          user_action: "advance", session_id: 1,
+        }),
+      })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          if (data) { setAgentResult(data); speak(data.navigation_instruction); }
+        })
+        .catch(function (_) {});
     } catch (e) {
-      speak("Error.");
-      setPhase("result");
+      setError(String(e && e.message ? e.message : e));
+      setPhase("error");
+      speak("Error");
     }
     scanningRef.current = false;
   }
@@ -150,7 +163,6 @@ export default function Live({ backendUrl }) {
 
   var color = result ? (CLASS_COLORS[result.class_name] || "#00D4FF") : "#00D4FF";
 
-  // Full-screen tap zone — EVERYTHING is the button
   return (
     <div
       onClick={handleTap}
@@ -163,12 +175,10 @@ export default function Live({ backendUrl }) {
         WebkitTapHighlightColor: "transparent", padding: 20,
       }}
     >
-      {/* REBOUND title — always visible */}
       <div style={{ position: "fixed", top: 12, left: 0, right: 0, textAlign: "center" }}>
         <span style={{ fontSize: 16, fontWeight: 700, color: "#00D4FF44", letterSpacing: 3 }}>REBOUND</span>
       </div>
 
-      {/* START */}
       {phase === "start" && (
         <>
           <div style={{ fontSize: 28, fontWeight: 700, color: "#00D4FF", letterSpacing: 3, marginBottom: 32 }}>
@@ -186,12 +196,10 @@ export default function Live({ backendUrl }) {
         </>
       )}
 
-      {/* INITIALIZING */}
       {phase === "init" && (
         <div style={{ fontSize: 18, color: "#64748B" }}>Starting...</div>
       )}
 
-      {/* ERROR */}
       {phase === "error" && (
         <div style={{ textAlign: "center", padding: 24 }}>
           <div style={{ color: "#EF4444", fontSize: 14, marginBottom: 20, wordBreak: "break-word" }}>{error}</div>
@@ -199,7 +207,6 @@ export default function Live({ backendUrl }) {
         </div>
       )}
 
-      {/* SCANNING */}
       {phase === "scanning" && (
         <div style={{
           width: 160, height: 160, borderRadius: "50%",
@@ -211,7 +218,6 @@ export default function Live({ backendUrl }) {
         </div>
       )}
 
-      {/* READY — waiting for tap */}
       {phase === "ready" && (
         <div style={{ textAlign: "center" }}>
           <div style={{
@@ -226,21 +232,17 @@ export default function Live({ backendUrl }) {
         </div>
       )}
 
-      {/* RESULT */}
       {phase === "result" && result && (
         <div style={{ textAlign: "center", width: "100%", maxWidth: 360 }}>
-          {/* Distance — massive */}
           <div style={{ fontSize: 80, fontWeight: 700, color: color, lineHeight: 1 }}>
             {result.distance_m.toFixed(1)}
           </div>
           <div style={{ fontSize: 14, color: "#64748B", marginBottom: 12 }}>meters</div>
 
-          {/* Class */}
           <div style={{ fontSize: 32, fontWeight: 700, color: color, marginBottom: 16 }}>
             {CLASS_LABELS[result.class_name] || result.class_name}
           </div>
 
-          {/* Stair alert */}
           {result.stair_message && (
             <div style={{
               background: "#1a0505", border: "2px solid #EF444444",
@@ -251,7 +253,6 @@ export default function Live({ backendUrl }) {
             </div>
           )}
 
-          {/* Agent instruction */}
           {agentResult && (
             <div style={{
               background: "#141824", borderRadius: 12, padding: 16,
@@ -262,17 +263,21 @@ export default function Live({ backendUrl }) {
             </div>
           )}
 
-          {/* Tap hint */}
           <div style={{ fontSize: 14, color: "#475569", marginTop: 16 }}>
             tap anywhere to scan again
           </div>
         </div>
       )}
 
-      {/* Scan counter — bottom */}
       {scanCount > 0 && (
         <div style={{ position: "fixed", bottom: 8, right: 12 }}>
           <span style={{ fontSize: 10, color: "#333" }}>{scanCount}</span>
+        </div>
+      )}
+
+      {debug && (
+        <div style={{ position: "fixed", bottom: 24, left: 0, right: 0, textAlign: "center" }}>
+          <span style={{ fontSize: 11, color: "#64748B" }}>{debug}</span>
         </div>
       )}
 

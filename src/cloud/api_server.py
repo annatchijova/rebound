@@ -349,6 +349,12 @@ async def predict_from_audio(req: AudioPredictRequest) -> AudioPredictResponse:
     features = extract_features(rir, sample_rate=TRAINING_SAMPLE_RATE)
     echo_strength = estimate_echo_strength(rir, sample_rate=TRAINING_SAMPLE_RATE)
 
+    print(
+        f"[predict] class={result['class_name']} conf={result['confidence']:.2f} "
+        f"snr={snr_db:.1f}dB n={len(audio)} sr_in={req.sample_rate} pitch={req.gyroscope_pitch_deg:.0f}",
+        flush=True,
+    )
+
     return AudioPredictResponse(
         class_name=result["class_name"],
         class_id=result["class_id"],
