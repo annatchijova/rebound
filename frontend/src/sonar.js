@@ -17,10 +17,21 @@ export class SonarEngine {
   }
 
   async init(backendUrl) {
-    // AudioContext: Chrome uses AudioContext, Safari uses webkitAudioContext
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) throw new Error("Web Audio API not supported");
-    this.audioCtx = new AC();
+    // AudioContext: try all known constructors
+    try {
+      if (window.AudioContext) {
+        this.audioCtx = new window.AudioContext();
+      } else if (window.webkitAudioContext) {
+        this.audioCtx = new window.webkitAudioContext();
+      } else {
+        throw new Error("No AudioContext found. Secure context: " + window.isSecureContext +
+          ". Protocol: " + window.location.protocol);
+      }
+    } catch (e) {
+      throw new Error("Audio init failed: " + e.message +
+        ". Secure: " + window.isSecureContext +
+        ". UA: " + navigator.userAgent.slice(0, 80));
+    }
 
     // Request microphone — don't constrain sampleRate (Safari ignores it)
     this.stream = await navigator.mediaDevices.getUserMedia({
