@@ -19,66 +19,111 @@ const CLASS_LABELS = {
   stairs: "Stairs",
 };
 
+// Haptic patterns mapped to danger level
+const HAPTIC_FOR_CLASS = {
+  open_space: "none",
+  nearby_wall: "continuous_high",
+  doorway: "double_pulse_slow",
+  corner: "continuous_low",
+  corridor: "single_pulse",
+  stairs: "stair_alert",
+};
+
+/**
+ * Speak text aloud using Web Speech API.
+ * Works on both Android Chrome and iOS Safari.
+ */
+function speak(text) {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  var utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 1.1;
+  utterance.lang = "en-US";
+  window.speechSynthesis.speak(utterance);
+}
+
+/**
+ * Build a short spoken instruction from prediction result.
+ */
+function buildSpokenInstruction(pred, agentInstruction) {
+  if (agentInstruction) return agentInstruction;
+
+  var label = CLASS_LABELS[pred.class_name] || pred.class_name;
+  var dist = pred.distance_m.toFixed(1);
+
+  if (pred.stair_message) return pred.stair_message;
+  if (pred.class_name === "open_space") return "Clear path ahead.";
+  if (pred.class_name === "nearby_wall") return "Wall at " + dist + " meters.";
+  if (pred.class_name === "doorway") return "Doorway at " + dist + " meters.";
+  if (pred.class_name === "corner") return "Corner at " + dist + " meters.";
+  if (pred.class_name === "corridor") return "Corridor. Walls at " + dist + " meters.";
+  return label + " at " + dist + " meters.";
+}
+
+const SCAN_INTERVAL_MS = 2000; // Scan every 2 seconds in auto mode
+
 export default function Live({ backendUrl }) {
-  const [status, setStatus] = useState("idle"); // idle | init | ready | scanning | result | error
+  const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
   const [scanCount, setScanCount] = useState(0);
   const [agentResult, setAgentResult] = useState(null);
+  const [running, setRunning] = useState(false);
 
   const engineRef = useRef(null);
   const gyroRef = useRef(null);
+  const loopRef = useRef(false);
 
-  // Initialize sonar engine
-  const initialize = useCallback(async () => {
+  // Initialize sonar engine + start auto loop
+  const startNavigation = useCallback(async () => {
     setStatus("init");
     setError("");
     try {
-      const engine = new SonarEngine();
+      var engine = new SonarEngine();
       await engine.init(backendUrl);
       engineRef.current = engine;
 
-      const gyro = new GyroReader();
+      var gyro = new GyroReader();
       await gyro.start();
       gyroRef.current = gyro;
 
-      setStatus("ready");
+      speak("REBOUND activated. Scanning.");
+      setStatus("running");
+      setRunning(true);
+      loopRef.current = true;
     } catch (e) {
       setError(e.message);
       setStatus("error");
     }
   }, [backendUrl]);
 
-  // Cleanup
-  useEffect(() => {
-    return () => {
-      engineRef.current?.destroy();
-      gyroRef.current?.stop();
-    };
+  // Stop navigation
+  const stopNavigation = useCallback(() => {
+    loopRef.current = false;
+    setRunning(false);
+    setStatus("stopped");
+    speak("Navigation stopped.");
   }, []);
 
-  // Scan: emit chirp, capture, predict, vibrate
-  const scan = useCallback(async () => {
-    if (!engineRef.current) return;
-    setStatus("scanning");
-    setError("");
+  // Single scan cycle
+  const doScan = useCallback(async () => {
+    if (!engineRef.current || !loopRef.current) return;
 
     try {
-      // 1. Capture audio (chirp + echo)
-      const { audio, sampleRate } = await engineRef.current.capture();
+      var { audio, sampleRate } = await engineRef.current.capture();
+      var pitch = gyroRef.current ? gyroRef.current.pitch : 0;
+      var pred = await engineRef.current.predict(backendUrl, audio, sampleRate, pitch);
 
-      // 2. Send to /predict
-      const pitch = gyroRef.current?.pitch || 0;
-      const pred = await engineRef.current.predict(backendUrl, audio, sampleRate, pitch);
       setResult(pred);
-      setScanCount((c) => c + 1);
+      setScanCount(function (c) { return c + 1; });
 
-      // 3. Vibrate
-      vibrate(pred.stairs_detection?.is_stair ? "stair_alert" : "single_pulse");
+      // Vibrate based on detected class
+      vibrate(HAPTIC_FOR_CLASS[pred.class_name] || "single_pulse");
 
-      // 4. Send to /process for memory agent
+      // Get memory agent instruction
+      var agentText = "";
       try {
-        const procResp = await fetch(`${backendUrl}/process`, {
+        var procResp = await fetch(backendUrl + "/process", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -94,20 +139,53 @@ export default function Live({ backendUrl }) {
           }),
         });
         if (procResp.ok) {
-          setAgentResult(await procResp.json());
+          var agentData = await procResp.json();
+          setAgentResult(agentData);
+          agentText = agentData.navigation_instruction;
         }
-      } catch {
-        // Memory agent is optional — don't block on failure
+      } catch (_e) {
+        // Memory agent optional
       }
 
-      setStatus("result");
+      // Speak the result
+      var spoken = buildSpokenInstruction(pred, agentText);
+      speak(spoken);
+
     } catch (e) {
-      setError(e.message);
-      setStatus("error");
+      // Don't stop loop on transient errors
+      console.error("Scan error:", e);
     }
   }, [backendUrl]);
 
-  const color = result ? CLASS_COLORS[result.class_name] || "#00D4FF" : "#00D4FF";
+  // Auto-scan loop
+  useEffect(() => {
+    if (!running) return;
+
+    var intervalId;
+
+    // First scan immediately
+    doScan().then(function () {
+      // Then scan every SCAN_INTERVAL_MS
+      intervalId = setInterval(function () {
+        if (loopRef.current) doScan();
+      }, SCAN_INTERVAL_MS);
+    });
+
+    return function () {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [running, doScan]);
+
+  // Cleanup
+  useEffect(function () {
+    return function () {
+      loopRef.current = false;
+      if (engineRef.current) engineRef.current.destroy();
+      if (gyroRef.current) gyroRef.current.stop();
+    };
+  }, []);
+
+  var color = result ? CLASS_COLORS[result.class_name] || "#00D4FF" : "#00D4FF";
 
   return (
     <div style={{
@@ -125,126 +203,108 @@ export default function Live({ backendUrl }) {
         </div>
       </div>
 
-      {/* Status area */}
+      {/* Start button — large, accessible */}
       {status === "idle" && (
-        <button onClick={initialize} style={btnStyle("#00D4FF")}>
-          Enable microphone
+        <button onClick={startNavigation} style={{
+          width: 200, height: 200, borderRadius: "50%",
+          background: "#00D4FF", color: "#0A0E1A", border: "none",
+          fontSize: 20, fontWeight: 700, cursor: "pointer",
+          fontFamily: "monospace",
+          boxShadow: "0 0 40px #00D4FF55",
+        }}
+        aria-label="Start navigation"
+        >
+          START
         </button>
       )}
 
       {status === "init" && (
-        <div style={{ color: "#64748B", fontSize: 14 }}>Initializing...</div>
+        <div style={{ color: "#64748B", fontSize: 16 }}>Initializing...</div>
       )}
 
       {status === "error" && (
         <div style={{ textAlign: "center" }}>
-          <div style={{ color: "#EF4444", fontSize: 13, marginBottom: 12 }}>{error}</div>
-          <button onClick={initialize} style={btnStyle("#F59E0B")}>Retry</button>
+          <div style={{ color: "#EF4444", fontSize: 13, marginBottom: 12, padding: 16 }}>{error}</div>
+          <button onClick={startNavigation} style={{
+            background: "#F59E0B", color: "#0A0E1A", border: "none",
+            borderRadius: 8, padding: "12px 28px", fontSize: 14,
+            fontWeight: 700, cursor: "pointer",
+          }}>Retry</button>
         </div>
       )}
 
-      {/* Main scan button */}
-      {(status === "ready" || status === "result") && (
+      {/* Running state — big stop button + live result */}
+      {(status === "running" || status === "stopped") && (
         <>
+          {/* Stop/Resume button — big and accessible */}
           <button
-            onClick={scan}
+            onClick={running ? stopNavigation : startNavigation}
             style={{
               width: 160, height: 160, borderRadius: "50%",
-              background: "none", border: `3px solid ${color}`,
-              color, fontSize: 18, fontWeight: 700, cursor: "pointer",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              boxShadow: `0 0 30px ${color}33`,
-              transition: "all 0.3s",
-              marginBottom: 24,
+              background: running ? "none" : "#10B981",
+              border: running ? "3px solid " + color : "none",
+              color: running ? color : "#0A0E1A",
+              fontSize: 16, fontWeight: 700, cursor: "pointer",
+              fontFamily: "monospace",
+              boxShadow: running ? "0 0 30px " + color + "33" : "0 0 30px #10B98155",
+              animation: running ? "pulse 1.5s ease-in-out infinite" : "none",
+              marginBottom: 16,
             }}
+            aria-label={running ? "Stop navigation" : "Resume navigation"}
           >
-            SCAN
+            {running ? "SCANNING" : "RESUME"}
           </button>
 
-          {/* Scan counter */}
-          <div style={{ fontSize: 11, color: "#64748B", marginBottom: 20 }}>
-            Scans: {scanCount}
+          <div style={{ fontSize: 11, color: "#64748B", marginBottom: 16 }}>
+            Scans: {scanCount} {running ? "| Auto mode" : "| Stopped"}
           </div>
+
+          <style>{`@keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.7;transform:scale(1.03)} }`}</style>
+
+          {/* Result display */}
+          {result && (
+            <div style={{
+              background: "#141824", borderRadius: 12, padding: 20, width: "100%",
+              maxWidth: 360, border: "1px solid " + color + "33",
+            }}>
+              {/* Class + distance — large for visibility */}
+              <div style={{ textAlign: "center", marginBottom: 16 }}>
+                <div style={{ fontSize: 48, fontWeight: 700, color: color }}>
+                  {result.distance_m.toFixed(1)} m
+                </div>
+                <div style={{ fontSize: 20, color: color, fontWeight: 600, marginTop: 4 }}>
+                  {CLASS_LABELS[result.class_name] || result.class_name}
+                </div>
+                <div style={{ fontSize: 11, color: "#64748B", marginTop: 4 }}>
+                  {(result.confidence * 100).toFixed(0)}% confidence | SNR {result.snr_db} dB
+                </div>
+              </div>
+
+              {/* Stair alert */}
+              {result.stair_message && (
+                <div style={{
+                  background: "#1a0505", border: "1px solid #EF444433",
+                  borderRadius: 8, padding: 12, marginBottom: 12,
+                  fontSize: 15, color: "#EF4444", fontWeight: 600,
+                }}>
+                  {result.stair_message}
+                </div>
+              )}
+
+              {/* Agent instruction */}
+              {agentResult && (
+                <div style={{
+                  background: "#0A0E1A", borderRadius: 8, padding: 12,
+                  fontSize: 14, color: "#CBD5E1", lineHeight: 1.5,
+                }}>
+                  {agentResult.navigation_instruction}
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
 
-      {status === "scanning" && (
-        <div style={{
-          width: 160, height: 160, borderRadius: "50%",
-          border: "3px solid #00D4FF", display: "flex",
-          alignItems: "center", justifyContent: "center",
-          animation: "pulse 0.8s ease-in-out infinite",
-          marginBottom: 24,
-        }}>
-          <span style={{ color: "#00D4FF", fontSize: 14 }}>Listening...</span>
-          <style>{`@keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(1.05)} }`}</style>
-        </div>
-      )}
-
-      {/* Result display */}
-      {result && (status === "result" || status === "ready") && (
-        <div style={{
-          background: "#141824", borderRadius: 12, padding: 20, width: "100%",
-          maxWidth: 360, border: `1px solid ${color}33`,
-        }}>
-          {/* Class + distance */}
-          <div style={{ textAlign: "center", marginBottom: 16 }}>
-            <div style={{ fontSize: 28, fontWeight: 700, color }}>
-              {result.distance_m.toFixed(1)} m
-            </div>
-            <div style={{ fontSize: 16, color, fontWeight: 600, marginTop: 4 }}>
-              {CLASS_LABELS[result.class_name] || result.class_name}
-            </div>
-            <div style={{ fontSize: 11, color: "#64748B", marginTop: 4 }}>
-              Confidence: {(result.confidence * 100).toFixed(0)}% | SNR: {result.snr_db} dB
-            </div>
-          </div>
-
-          {/* Stair message */}
-          {result.stair_message && (
-            <div style={{
-              background: "#1a0505", border: "1px solid #EF444433",
-              borderRadius: 8, padding: 10, marginBottom: 12,
-              fontSize: 13, color: "#EF4444",
-            }}>
-              {result.stair_message}
-            </div>
-          )}
-
-          {/* Agent instruction */}
-          {agentResult && (
-            <div style={{
-              background: "#0A0E1A", borderRadius: 8, padding: 10,
-              fontSize: 13, color: "#CBD5E1", lineHeight: 1.5,
-              marginBottom: 12,
-            }}>
-              {agentResult.navigation_instruction}
-            </div>
-          )}
-
-          {/* Probabilities */}
-          <div style={{ fontSize: 11, color: "#64748B", marginBottom: 6 }}>Probabilities</div>
-          {Object.entries(result.probabilities).map(([cls, prob]) => (
-            <div key={cls} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
-              <span style={{ fontSize: 10, color: "#64748B", width: 70 }}>
-                {CLASS_LABELS[cls] || cls}
-              </span>
-              <div style={{ flex: 1, background: "#1E2A3A", borderRadius: 3, height: 6, overflow: "hidden" }}>
-                <div style={{
-                  width: `${prob * 100}%`, height: "100%",
-                  background: CLASS_COLORS[cls] || "#64748B",
-                  borderRadius: 3, transition: "width 0.3s",
-                }} />
-              </div>
-              <span style={{ fontSize: 10, color: "#94A3B8", width: 30, textAlign: "right" }}>
-                {(prob * 100).toFixed(0)}%
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Backend URL (small, bottom) */}
       <div style={{ marginTop: "auto", paddingTop: 24, textAlign: "center" }}>
         <div style={{ fontSize: 10, color: "#475569" }}>
           Backend: {backendUrl}
@@ -252,12 +312,4 @@ export default function Live({ backendUrl }) {
       </div>
     </div>
   );
-}
-
-function btnStyle(color) {
-  return {
-    background: color, color: "#0A0E1A", border: "none",
-    borderRadius: 8, padding: "12px 28px", fontSize: 14,
-    fontWeight: 700, cursor: "pointer", fontFamily: "monospace",
-  };
 }
