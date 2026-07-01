@@ -48,7 +48,8 @@ class TestWienerDeconvolution:
         chirp = generate_chirp()
         received = np.random.default_rng(0).standard_normal(2000)
         rir = wiener_deconvolution(received, chirp)
-        assert rir.shape == (len(received),)
+        n_linear = len(received) + len(chirp) - 1
+        assert rir.shape == (n_linear,)
 
     def test_output_dtype(self):
         chirp = generate_chirp()
@@ -76,9 +77,12 @@ class TestAdaptiveWiener:
 
 class TestEstimateSNR:
     def test_clean_signal(self):
-        """Signal with trailing silence should give high SNR."""
-        signal = np.zeros(1000)
-        signal[:500] = np.sin(2 * np.pi * 100 * np.arange(500) / 44100)
+        """Signal with burst followed by noise floor should give high SNR."""
+        rng = np.random.default_rng(42)
+        n = 6000
+        signal = rng.standard_normal(n) * 0.001  # noise floor
+        # Add a burst in the first third (simulating chirp echo)
+        signal[:2000] += np.sin(2 * np.pi * 1000 * np.arange(2000) / 44100) * 0.5
         snr = estimate_snr(signal)
         assert snr > 10
 
@@ -86,10 +90,26 @@ class TestEstimateSNR:
         rng = np.random.default_rng(42)
         noise = rng.standard_normal(1000)
         snr = estimate_snr(noise)
-        assert snr < 15
+        assert -3 < snr < 3
 
     def test_with_noise_region(self):
         signal = np.zeros(1000)
         signal[100:200] = 1.0
         snr = estimate_snr(signal, noise_region=(800, 1000))
         assert snr > 20
+
+    def test_reverberant_signal_not_underestimated(self):
+        """Reverberant signals should not have SNR severely underestimated.
+
+        A decaying signal with clear quiet windows at the end should have
+        the noise floor estimated from those quiet windows, not from the
+        reverberant tail.
+        """
+        rng = np.random.default_rng(42)
+        n = 8000
+        t = np.arange(n) / 44100
+        # Fast decay so the tail is clearly noise-dominated
+        signal = np.exp(-200 * t) * np.sin(2 * np.pi * 500 * t)
+        signal += rng.standard_normal(n) * 0.001
+        snr = estimate_snr(signal)
+        assert snr > 5

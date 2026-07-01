@@ -125,13 +125,19 @@ def compute_rt60(
     schroeder_db = 10 * np.log10(schroeder / (schroeder[0] + 1e-12) + 1e-12)
     # schroeder_db: (n,) — float64
 
+    # Ensure monotonicity for searchsorted
+    neg_schroeder = -schroeder_db
+    if not np.all(np.diff(neg_schroeder) >= 0):
+        # Force monotonicity via cumulative maximum
+        neg_schroeder = np.maximum.accumulate(neg_schroeder)
+
     # Find T30 (decay from -5 dB to -35 dB) and extrapolate to T60
-    idx_5 = np.searchsorted(-schroeder_db, 5)
-    idx_35 = np.searchsorted(-schroeder_db, 35)
+    idx_5 = np.searchsorted(neg_schroeder, 5)
+    idx_35 = np.searchsorted(neg_schroeder, 35)
 
     if idx_35 >= len(schroeder_db) or idx_35 <= idx_5:
         # Not enough decay — try T20 (-5 to -25 dB)
-        idx_25 = np.searchsorted(-schroeder_db, 25)
+        idx_25 = np.searchsorted(neg_schroeder, 25)
         if idx_25 >= len(schroeder_db) or idx_25 <= idx_5:
             # Very dry room or very short signal
             return 0.0

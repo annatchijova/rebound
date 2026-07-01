@@ -104,21 +104,44 @@ def train(
 
     full_dataset = ReboundDataset(data_path)
 
-    # Split por config_id: todas las muestras de un mismo RoomConfig
-    # van al mismo split. Evita data leakage.
-    config_ids_np = full_dataset.config_ids.numpy()
-    unique_configs = np.unique(config_ids_np)
+    # Stratified split: ensures each class is proportionally represented
+    labels_np = full_dataset.labels.numpy()
+    all_indices = np.arange(len(labels_np))
 
     rng_split = np.random.default_rng(42)
-    rng_split.shuffle(unique_configs)
+    train_indices = []
+    val_indices = []
 
-    n_val_configs = int(len(unique_configs) * val_split)
-    val_configs = set(unique_configs[:n_val_configs].tolist())
+    for class_id in np.unique(labels_np):
+        class_mask = labels_np == class_id
+        class_indices = all_indices[class_mask].tolist()
+        rng_split.shuffle(class_indices)
+        n_val_class = max(1, int(len(class_indices) * val_split))
+        val_indices.extend(class_indices[:n_val_class])
+        train_indices.extend(class_indices[n_val_class:])
 
-    val_indices = [i for i, c in enumerate(config_ids_np)
-                   if int(c) in val_configs]
-    train_indices = [i for i, c in enumerate(config_ids_np)
-                     if int(c) not in val_configs]
+    # Recalculate normalization stats using ONLY training data (fixes data leakage)
+    train_rt60 = full_dataset.scalars[train_indices, 0]
+    train_centroid = full_dataset.scalars[train_indices, 1]
+    # The dataset was already normalized with full stats; we need raw values.
+    # Reverse the initial normalization, then re-normalize with train-only stats.
+    raw_rt60 = train_rt60 * full_dataset.rt60_std + full_dataset.rt60_mean
+    raw_centroid = train_centroid * full_dataset.centroid_std + full_dataset.centroid_mean
+
+    train_rt60_mean = float(raw_rt60.mean())
+    train_rt60_std = float(raw_rt60.std() + 1e-8)
+    train_centroid_mean = float(raw_centroid.mean())
+    train_centroid_std = float(raw_centroid.std() + 1e-8)
+
+    # Re-normalize ALL scalars using train-only statistics
+    all_raw_rt60 = full_dataset.scalars[:, 0] * full_dataset.rt60_std + full_dataset.rt60_mean
+    all_raw_centroid = full_dataset.scalars[:, 1] * full_dataset.centroid_std + full_dataset.centroid_mean
+    full_dataset.scalars[:, 0] = (all_raw_rt60 - train_rt60_mean) / train_rt60_std
+    full_dataset.scalars[:, 1] = (all_raw_centroid - train_centroid_mean) / train_centroid_std
+    full_dataset.rt60_mean = train_rt60_mean
+    full_dataset.rt60_std = train_rt60_std
+    full_dataset.centroid_mean = train_centroid_mean
+    full_dataset.centroid_std = train_centroid_std
 
     train_ds = Subset(full_dataset, train_indices)
     val_ds = Subset(full_dataset, val_indices)
@@ -130,7 +153,7 @@ def train(
 
     print(f"Train: {n_train}, Val: {n_val}")
 
-    model = ReboundCNN(n_classes=5).to(device)
+    model = ReboundCNN(n_classes=6).to(device)
     print(f"Parameters: {count_parameters(model):,}")
 
     class_criterion = nn.CrossEntropyLoss()
@@ -144,6 +167,12 @@ def train(
     ckpt_path.mkdir(parents=True, exist_ok=True)
 
     best_val_loss = float("inf")
+    scaler_stats = {
+        "rt60_mean": full_dataset.rt60_mean,
+        "rt60_std": full_dataset.rt60_std,
+        "centroid_mean": full_dataset.centroid_mean,
+        "centroid_std": full_dataset.centroid_std,
+    }
     history: dict[str, list] = {
         "train_loss": [],
         "val_loss": [],
@@ -217,13 +246,6 @@ def train(
                 f"Val Acc: {val_acc:.3f} | "
                 f"Val MAE dist: {val_mae:.3f}m"
             )
-
-        scaler_stats = {
-            "rt60_mean": full_dataset.rt60_mean,
-            "rt60_std": full_dataset.rt60_std,
-            "centroid_mean": full_dataset.centroid_mean,
-            "centroid_std": full_dataset.centroid_std,
-        }
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss

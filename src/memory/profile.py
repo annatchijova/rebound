@@ -8,6 +8,8 @@ configuration. Persisted as JSON between sessions.
 from __future__ import annotations
 
 import json
+import logging
+import re
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -17,7 +19,11 @@ from numpy.typing import NDArray
 
 from src.simulation.room_generator import SPACE_CLASSES
 
+logger = logging.getLogger(__name__)
+
 N_CLASSES = len(SPACE_CLASSES)
+
+_VALID_USER_ID = re.compile(r'[a-zA-Z0-9_\-]{1,64}')
 
 # Valid user actions
 USER_ACTIONS = ("advance", "hesitate", "retreat", "ignore")
@@ -129,8 +135,18 @@ class UserProfile:
         self.total_sessions += 1
         self.updated_at = time.time()
 
+    @staticmethod
+    def _validate_user_id(user_id: str) -> None:
+        """Validate user_id to prevent path traversal."""
+        if not _VALID_USER_ID.fullmatch(user_id):
+            raise ValueError(
+                f"Invalid user_id: {user_id!r}. "
+                "Must be 1-64 alphanumeric characters, hyphens, or underscores."
+            )
+
     def save(self, directory: str = "data/profiles") -> Path:
         """Persist profile to JSON."""
+        self._validate_user_id(self.user_id)
         path = Path(directory)
         path.mkdir(parents=True, exist_ok=True)
         filepath = path / f"{self.user_id}.json"
@@ -141,11 +157,16 @@ class UserProfile:
     @classmethod
     def load(cls, user_id: str, directory: str = "data/profiles") -> UserProfile:
         """Load existing profile or create a new one."""
+        cls._validate_user_id(user_id)
         filepath = Path(directory) / f"{user_id}.json"
         if filepath.exists():
-            with open(filepath) as f:
-                data = json.load(f)
-            return cls(**data)
+            try:
+                with open(filepath) as f:
+                    data = json.load(f)
+                return cls(**data)
+            except (json.JSONDecodeError, TypeError, KeyError) as e:
+                logger.error("Corrupt profile %s: %s. Creating new profile.", user_id, e)
+                return cls(user_id=user_id)
         return cls(user_id=user_id)
 
     def to_summary(self) -> dict:

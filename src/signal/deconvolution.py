@@ -57,7 +57,11 @@ def wiener_deconvolution(
     rir = sp_fft.irfft(H, n=n_fft)
     # rir: (n_fft,) — float64
 
-    rir = rir[: len(received)]
+    # Truncate to linear deconvolution length.
+    # Using n_linear preserves all echoes within the captured window,
+    # including the last len(reference)-1 samples that were previously
+    # discarded (up to ~6 m of range at 44100 Hz with 20 ms chirp).
+    rir = rir[:n_linear]
     return rir
 
 
@@ -90,8 +94,12 @@ def estimate_snr(
 ) -> float:
     """Estimate SNR in dB from the signal.
 
-    If no noise region is specified, uses the last 10% of samples
-    as the noise floor estimate.
+    Noise floor estimation strategy:
+    - If noise_region is given explicitly, uses that.
+    - Otherwise, uses the 5th percentile of windowed power as a robust
+      estimate of the noise floor. This avoids the bias of the old method
+      (last 10% of signal) which overestimates noise in reverberant signals
+      where the tail still contains significant late reflections.
 
     Args:
         signal: complete signal — shape: (n,)
@@ -102,12 +110,18 @@ def estimate_snr(
     """
     if noise_region is not None:
         noise = signal[noise_region[0]:noise_region[1]]
+        noise_power = float(np.mean(noise ** 2))
     else:
-        n_noise = max(int(len(signal) * 0.1), 1)
-        noise = signal[-n_noise:]
+        # Robust noise floor: 5th percentile of windowed power
+        window_size = max(int(len(signal) * 0.02), 16)
+        n_windows = max(1, len(signal) // window_size)
+        windowed_power = np.array([
+            np.mean(signal[i * window_size:(i + 1) * window_size] ** 2)
+            for i in range(n_windows)
+        ])
+        noise_power = float(np.percentile(windowed_power, 5))
 
-    noise_power = np.mean(noise ** 2)
-    signal_power = np.mean(signal ** 2)
+    signal_power = float(np.mean(signal ** 2))
 
     if signal_power < 1e-12:
         return -60.0  # Silent signal — SNR effectively −∞

@@ -68,6 +68,41 @@ class TestDetectStairPeriodicity:
         assert not result["is_stair"]
 
 
+    def test_noisy_stair_rir(self):
+        """Stair RIR with moderate noise should still be detectable."""
+        sr = 44100
+        rng = np.random.default_rng(42)
+        rir = synthesize_stair_rir(
+            n_steps=8,
+            tread_m=0.29,
+            sample_rate=sr,
+        )
+        # Add noise at SNR ~20 dB
+        signal_power = np.mean(rir ** 2)
+        noise_power = signal_power / (10 ** (20 / 10))
+        noise = rng.standard_normal(len(rir)) * np.sqrt(noise_power)
+        noisy_rir = rir + noise
+
+        result = detect_stair_periodicity(noisy_rir, sr)
+        assert result["is_stair"]
+        assert result["confidence"] > 0.3
+
+    def test_very_noisy_stair_rir(self):
+        """Stair RIR with high noise (SNR ~10 dB) — detector may fail gracefully."""
+        sr = 44100
+        rng = np.random.default_rng(42)
+        rir = synthesize_stair_rir(n_steps=8, tread_m=0.29, sample_rate=sr)
+        signal_power = np.mean(rir ** 2)
+        noise_power = signal_power / (10 ** (10 / 10))
+        noise = rng.standard_normal(len(rir)) * np.sqrt(noise_power)
+        noisy_rir = rir + noise
+
+        result = detect_stair_periodicity(noisy_rir, sr)
+        # At this SNR, detection may fail — but must not crash
+        assert isinstance(result["is_stair"], bool)
+        assert 0.0 <= result["confidence"] <= 1.0
+
+
 class TestEstimateStairGeometry:
     def test_standard_staircase(self):
         """With spacing=0.29m and n_steps=8, verify geometry."""

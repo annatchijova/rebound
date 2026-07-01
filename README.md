@@ -12,34 +12,59 @@ This project was designed, architected, and developed in full by **Olga Vasiliev
 
 ## What it does
 
-REBOUND emits ultrasonic chirps, listens to echoes, and classifies the acoustic environment
-in real time. A Qwen-powered Memory Agent learns user behavior across sessions and
-personalizes navigation instructions accordingly.
+REBOUND emits ultrasonic chirps from the device speaker, listens to echoes via the
+microphone, and classifies the acoustic environment in real time. A Qwen-powered Memory
+Agent learns user behavior across sessions and personalizes navigation instructions.
 
 Pipeline per observation:
-1. Emit a CF-FM chirp (exponential sweep, 8 kHz)
+1. Emit a CF-FM chirp (exponential sweep, 8 kHz) through the speaker
 2. Capture the echo and deconvolve to obtain the Room Impulse Response (RIR)
-3. Extract acoustic features: mel spectrogram (64×32), MFCCs (13×32), RT60, spectral centroid
-4. Classify the environment with a lightweight PyTorch CNN
-5. Run independent two-pass periodic staircase detector
+3. Extract acoustic features: mel spectrogram (64x32), MFCCs (13x32), RT60, spectral centroid
+4. Classify the environment with a lightweight PyTorch CNN (6 classes)
+5. Run independent two-pass periodic staircase detector (DSP reinforcement)
 6. Qwen Memory Agent generates navigation instruction, updates episodic and semantic memory
 7. Adaptive user profile adjusts Bayesian priors across sessions
+8. Haptic feedback delivered via device vibration
 
-**CNN classes:** open_space · nearby_wall · doorway · corner · corridor  
-**Staircases:** separate detector — not a CNN class
+**CNN classes:** open_space · nearby_wall · doorway · corner · corridor · stairs  
+**Staircases:** CNN class + independent DSP detector for mutual reinforcement
+
+---
+
+## Architecture
+
+```
+  Mobile (PWA)                        Alibaba Cloud ECS
+ ┌──────────────┐                   ┌──────────────────────────────────┐
+ │ Web Audio API │── audio buffer ──▶│ POST /predict                    │
+ │ getUserMedia  │   + sample_rate   │   ├─ Wiener deconvolution (RIR) │
+ │ speaker emit  │                   │   ├─ Feature extraction          │
+ │               │                   │   ├─ CNN classifier (6 classes)  │
+ │ DeviceOrienta │── gyro pitch ────▶│   ├─ Stair detector (DSP)       │
+ │ tion Event    │                   │   └─ predict() result            │
+ │               │◀── JSON ─────────│                                  │
+ │ navigator     │   instruction     │ POST /process                    │
+ │ .vibrate()    │   haptic_pattern  │   ├─ Qwen-Plus Memory Agent     │
+ │               │   distance_m      │   ├─ Episodic/Semantic memory   │
+ │               │   class_name      │   └─ User profile update        │
+ └──────────────┘                   └──────────────────────────────────┘
+                                              │
+                                     DashScope API (Qwen-Plus)
+```
 
 ---
 
 ## Qwen Cloud Integration
 
-The Memory Agent (`src/memory/agent.py`) uses **Qwen-Max** via the DashScope API to:
+The Memory Agent (`src/memory/agent.py`) uses **Qwen-Plus** via the DashScope API to:
 - Reason over sonar observations in natural language
-- Decide which memories to store, update, or forget
+- Decide which memories to store, update, or forget (selective forgetting)
 - Generate personalized navigation instructions per user
+- Adjust Bayesian confidence priors based on user behavior
 
-The backend API (`src/cloud/api_server.py`) is deployed on **Alibaba Cloud ECS** via Docker
-(`src/cloud/deploy.py`), exposing endpoints for observation processing, user profiles,
-and session management.
+The backend API (`src/cloud/api_server.py`) is deployed on **Alibaba Cloud ECS** via Docker,
+exposing endpoints for audio prediction, observation processing, user profiles, and session
+management. All agent calls are async (`httpx.AsyncClient`) to handle concurrent users.
 
 ---
 
@@ -47,38 +72,26 @@ and session management.
 
 | Metric | Value |
 |---|---|
-| val_accuracy (20% held-out split) | 0.950 |
-| Tests passing | 66/66 |
+| CNN classes | 6 (open_space, nearby_wall, doorway, corner, corridor, stairs) |
+| val_accuracy (20% stratified split) | 0.953 |
+| val_distance_MAE | 0.302 m |
+| Tests passing | 88/88 |
 | Staircase detector SNR threshold | ~27 dB |
-| corner→nearby_wall confusion bias | 26/5 (full dataset) |
+| Training device | NVIDIA RTX 3090 |
 
 Full empirical limitations: [LIMITATIONS.md](LIMITATIONS.md)
 
 ---
 
-## Architecture
+## API Endpoints
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    REBOUND Pipeline                 │
-│                                                     │
-│  Microphone → Chirp capture → Deconvolution (RIR)  │
-│       ↓                                             │
-│  Feature extraction (mel, MFCCs, RT60, centroid)   │
-│       ↓                                             │
-│  CNN Classifier (5 classes) + Staircase Detector   │
-│       ↓                                             │
-│  Qwen-Max Memory Agent (DashScope API)              │
-│       ├── Episodic Memory (recent events)           │
-│       ├── Semantic Memory (consolidated rules)      │
-│       └── User Profile (Bayesian adaptive priors)  │
-│       ↓                                             │
-│  Navigation instruction + Haptic pattern            │
-└─────────────────────────────────────────────────────┘
-         ↑                          ↓
-   FastAPI backend          Alibaba Cloud ECS
-   (src/cloud/)             Docker deployment
-```
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/predict` | Raw audio in → classification + distance + stair detection |
+| `POST` | `/process` | Classification result → Memory Agent → navigation instruction |
+| `GET` | `/profile/{user_id}` | User profile, episodic stats, semantic memory |
+| `POST` | `/session` | Start new session for user |
+| `GET` | `/health` | Health check |
 
 ---
 
@@ -127,7 +140,7 @@ python3 -m src.cloud.deploy --registry <your-acr-registry> --tag v0.1
 
 **Run tests:**
 ```bash
-python3 -m pytest tests/ -q
+python3 -m pytest tests/ -v
 ```
 
 ---
@@ -138,17 +151,32 @@ python3 -m pytest tests/ -q
 src/
   signal/      chirp, capture, deconvolution, staircase detector
   features/    spectral and geometric feature extraction
-  simulation/  RIR generation (pyroomacoustics)
-  models/      CNN classifier, training, inference
-  memory/      Qwen Memory Agent, user profile, episodic/semantic memory
-  cloud/       FastAPI API server + Alibaba Cloud ECS deploy script
+  simulation/  RIR generation (pyroomacoustics + synthetic stairs)
+  models/      CNN classifier (6 classes), training, inference
+  memory/      Qwen Memory Agent (sync + async), user profile, episodic/semantic memory
+  cloud/       FastAPI API server (async) + Alibaba Cloud ECS deploy script
+  feedback/    haptic pattern definitions
   demo/        adaptive real-time visualization (matplotlib)
+frontend/      React demo UI (Vite + Recharts)
 future/
   ewc.py             Elastic Weight Consolidation — deferred to v2
   augmentation.py    noise augmentation (known bug, see header) — deferred to v2
-tests/             66 unit tests
-LIMITATIONS.md     empirically measured system constraints
+tests/               88 unit + integration tests
+LIMITATIONS.md       empirically measured system constraints
+CHANGELOG_2026-07-01.md  33-bug remediation changelog
 ```
+
+---
+
+## Security
+
+- `user_id` validated against `[a-zA-Z0-9_\-]{1,64}` (path traversal prevention)
+- `class_name` validated against whitelist (prompt injection prevention)
+- LLM multipliers clamped to `[0.1, 10.0]` (hallucination containment)
+- Semantic memory values capped at 512 chars (unbounded growth prevention)
+- Per-user `asyncio.Lock` (race condition prevention)
+- `.dockerignore` excludes `data/profiles/` and `data/checkpoints/`
+- **No JWT/API key authentication yet** — deploy behind reverse proxy with auth
 
 ---
 

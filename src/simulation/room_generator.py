@@ -27,6 +27,7 @@ SPACE_CLASSES = {
     2: "doorway",
     3: "corner",
     4: "corridor",
+    5: "stairs",
 }
 
 CLASS_NAMES_TO_ID = {v: k for k, v in SPACE_CLASSES.items()}
@@ -48,20 +49,42 @@ def generate_rir(
     config: RoomConfig,
     sample_rate: int | None = None,
     max_order: int = 10,
+    noise_level: float = 0.0,
+    seed: int | None = None,
 ) -> NDArray[np.float64]:
-    """Generate a RIR using pyroomacoustics image source method.
+    """Generate a RIR using pyroomacoustics or synthetic stair model.
+
+    For class_id=5 (stairs), uses synthesize_stair_rir from the stairs
+    module instead of pyroomacoustics ShoeBox.
 
     Args:
         config: room configuration
         sample_rate: sampling rate in Hz
         max_order: maximum reflection order (higher = more reverberation)
+        noise_level: Gaussian noise level to add (0 = clean)
+        seed: RNG seed for noise
 
     Returns:
         RIR — shape: (n_samples,) — float64
     """
-    import pyroomacoustics as pra
-
     sr = sample_rate or CHIRP_PARAMS["sample_rate"]
+
+    if config.class_id == 5:
+        from src.signal.stairs import synthesize_stair_rir
+        rir = synthesize_stair_rir(
+            n_steps=int(config.materials.get("n_steps", 8)),
+            tread_m=config.materials.get("tread_m", 0.29),
+            attenuation_per_step=config.materials.get("attenuation", 0.85),
+            sample_rate=sr,
+            base_distance_m=config.materials.get("base_distance_m", 0.5),
+            rir_length_s=0.15,
+        )
+        if noise_level > 0:
+            rng = np.random.default_rng(seed)
+            rir = rir + rng.standard_normal(len(rir)) * noise_level
+        return rir
+
+    import pyroomacoustics as pra
 
     abs_coeff = config.materials.get("absorption", 0.3)
     materials = pra.Material(abs_coeff)
@@ -152,6 +175,8 @@ def random_doorway(rng: np.random.Generator) -> RoomConfig:
 
     Simulated as a narrow room where the user stands in the opening.
     The spectral signature comes from close reflections off the frame.
+    distance_m = distance to the far wall (forward direction), consistent
+    with all other classes.
     """
     width = rng.uniform(0.8, 1.2)   # door width
     depth = rng.uniform(3.0, 6.0)
@@ -159,7 +184,8 @@ def random_doorway(rng: np.random.Generator) -> RoomConfig:
 
     src_x = width / 2
     src_y = rng.uniform(0.3, 0.8)
-    distance = min(src_x, width - src_x)
+    # Forward distance: to the far wall through the opening
+    distance = depth - src_y
 
     mic_x = src_x + rng.uniform(-0.03, 0.03)
     mic_y = src_y + rng.uniform(-0.03, 0.03)
@@ -235,6 +261,36 @@ def random_corridor(rng: np.random.Generator) -> RoomConfig:
     )
 
 
+def random_stairs(rng: np.random.Generator) -> RoomConfig:
+    """Generate config for staircase.
+
+    Uses synthetic stair RIR parameters. The actual RIR is generated
+    by generate_rir_or_stairs() which dispatches to synthesize_stair_rir
+    for class_id=5.
+    """
+    n_steps = rng.integers(5, 15)
+    tread_m = rng.uniform(0.27, 0.31)  # within standard tolerance
+    base_distance = rng.uniform(0.3, 1.5)
+    distance = base_distance  # distance to first step
+
+    # Room dimensions are placeholders — RIR comes from synthesize_stair_rir
+    return RoomConfig(
+        room_dim=[2.0, float(n_steps) * tread_m + 2.0, 3.0],
+        source_pos=[1.0, 0.5, 1.5],
+        mic_pos=[1.0, 0.5, 1.5],
+        materials={
+            "absorption": rng.uniform(0.1, 0.4),
+            "n_steps": float(n_steps),
+            "tread_m": tread_m,
+            "base_distance_m": base_distance,
+            "attenuation": rng.uniform(0.75, 0.92),
+        },
+        class_id=5,
+        class_name="stairs",
+        distance_m=distance,
+    )
+
+
 # Generator map by class
 GENERATORS = {
     0: random_open_space,
@@ -242,6 +298,7 @@ GENERATORS = {
     2: random_doorway,
     3: random_corner,
     4: random_corridor,
+    5: random_stairs,
 }
 
 

@@ -74,6 +74,23 @@ class SemanticMemory:
         """Look up an entry by key."""
         return self.entries.get(key)
 
+    def reduce_confidence(self, key: str, factor: float = 0.7) -> bool:
+        """Reduce confidence of an entry by a multiplicative factor.
+
+        Args:
+            key: entry key
+            factor: multiplicative factor (0 < factor < 1)
+
+        Returns:
+            True if entry existed and was updated, False otherwise
+        """
+        entry = self.entries.get(key)
+        if entry is None:
+            return False
+        entry.confidence *= factor
+        entry.updated_at = time.time()
+        return True
+
     def retrieve_by_prefix(self, prefix: str) -> list[SemanticEntry]:
         """Find entries whose key starts with prefix."""
         return [

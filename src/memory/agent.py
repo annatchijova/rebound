@@ -13,11 +13,14 @@ This module is the core of the MemoryAgent hackathon track.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from src.memory.episodic import EpisodicMemory, Episode
 from src.memory.profile import UserProfile
@@ -25,7 +28,7 @@ from src.memory.semantic import SemanticMemory
 from src.simulation.room_generator import SPACE_CLASSES
 
 # Qwen Cloud API (DashScope)
-QWEN_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+QWEN_API_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
 QWEN_MODEL = "qwen-plus"
 
 SYSTEM_PROMPT = """\
@@ -261,6 +264,7 @@ class QwenMemoryAgent:
                     class_id = cid
                     break
             if class_id is not None:
+                multiplier = max(0.1, min(10.0, multiplier))
                 profile.class_weights[class_id] *= multiplier
 
         # Normalize weights
@@ -278,6 +282,8 @@ class QwenMemoryAgent:
             elif op_type == "update_semantic":
                 key = op.get("key", "")
                 value = op.get("value", "")
+                if len(key) > 128 or len(value) > 512:
+                    continue
                 if key and value:
                     semantic.update(key, value, confidence=0.6)
 
@@ -287,13 +293,104 @@ class QwenMemoryAgent:
 
             elif op_type == "reduce_semantic_confidence":
                 key = op.get("key", "")
-                entry = semantic.retrieve(key)
-                if entry:
-                    entry.confidence *= 0.7
+                semantic.reduce_confidence(key, factor=0.7)
+
+            else:
+                logger.warning("Unknown op_type from LLM: %s", op_type)
 
     def close(self) -> None:
         """Close the HTTP client."""
         self.client.close()
+
+
+class AsyncQwenMemoryAgent:
+    """Async memory agent using Qwen for the FastAPI server (non-blocking)."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = QWEN_MODEL,
+        base_url: str = QWEN_API_URL,
+    ):
+        self.api_key = api_key or os.environ.get("DASHSCOPE_API_KEY", "")
+        self.model = model
+        self.base_url = base_url
+        self.client = httpx.AsyncClient(timeout=30.0)
+        self._sync_agent = QwenMemoryAgent.__new__(QwenMemoryAgent)
+
+    async def process_observation(
+        self,
+        user_profile: UserProfile,
+        episodic: EpisodicMemory,
+        semantic: SemanticMemory,
+        prediction: dict[str, Any],
+        features_summary: dict[str, float],
+        user_action: str,
+        session_id: int,
+    ) -> AgentResponse:
+        context = QwenMemoryAgent._build_context(
+            self._sync_agent, user_profile, episodic, semantic,
+            prediction, features_summary, user_action, session_id
+        )
+        raw = await self._call_qwen(context)
+        return QwenMemoryAgent._parse_response(self._sync_agent, raw)
+
+    async def _call_qwen(self, user_message: str) -> str:
+        """Call Qwen Cloud API asynchronously."""
+        import asyncio as _asyncio
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+            "temperature": 0.3,
+            "response_format": {"type": "json_object"},
+        }
+
+        for attempt in range(3):
+            try:
+                response = await self.client.post(
+                    self.base_url,
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
+            except (httpx.HTTPStatusError, httpx.RequestError, KeyError, json.JSONDecodeError) as e:
+                if attempt < 2:
+                    await _asyncio.sleep(2 ** attempt)
+                    continue
+                return json.dumps({
+                    "navigation_instruction": "Processing error. Proceed with caution.",
+                    "confidence_adjustment": {},
+                    "memory_ops": [],
+                    "haptic_pattern": "double_pulse",
+                    "reasoning": f"API error after 3 attempts: {type(e).__name__}",
+                })
+
+    def apply_memory_ops(
+        self,
+        response: AgentResponse,
+        profile: UserProfile,
+        episodic: EpisodicMemory,
+        semantic: SemanticMemory,
+        current_session: int,
+    ) -> None:
+        """Delegates to sync implementation (CPU-only, no I/O)."""
+        QwenMemoryAgent.apply_memory_ops(
+            self._sync_agent, response, profile, episodic, semantic, current_session
+        )
+
+    async def close(self) -> None:
+        """Close the async HTTP client."""
+        await self.client.aclose()
 
 
 class MockQwenMemoryAgent(QwenMemoryAgent):
@@ -374,3 +471,74 @@ class MockQwenMemoryAgent(QwenMemoryAgent):
         }
 
         return json.dumps(response)
+
+
+def _mock_response_from_context(user_message: str) -> str:
+    """Shared mock response logic for sync and async mock agents."""
+    context = json.loads(user_message)
+    obs = context["current_observation"]
+    prediction = obs["prediction"]
+    action = obs["user_action"]
+    profile = context["user_profile"]
+
+    class_name = prediction["class"]
+    distance = prediction["distance_m"]
+
+    instructions = {
+        "open_space": "Open space. No nearby obstacles.",
+        "nearby_wall": f"Wall detected at {distance:.1f} meters ahead.",
+        "doorway": f"Opening detected at {distance:.1f} meters. Doorway.",
+        "corner": f"Corner detected at {distance:.1f} meters.",
+        "corridor": f"Corridor. Lateral walls at {distance:.1f} meters.",
+        "stairs": f"Staircase detected at {distance:.1f} meters ahead.",
+    }
+
+    instruction = instructions.get(class_name, f"{class_name} at {distance:.1f}m")
+
+    adj = {}
+    if action == "hesitate":
+        adj[class_name] = 0.95
+    elif action == "retreat":
+        adj[class_name] = 0.85
+    elif action == "advance":
+        adj[class_name] = 1.05
+
+    memory_ops = [
+        {"op": "store_episodic", "value": f"user {action} at {class_name}@{distance:.1f}m"}
+    ]
+
+    total = profile.get("total_interactions", 0)
+    if total > 0 and total % 10 == 0:
+        memory_ops.append({"op": "decay_episodic", "older_than_sessions": 20})
+
+    if action == "hesitate":
+        memory_ops.append({
+            "op": "update_semantic",
+            "key": f"difficulty_{class_name}",
+            "value": f"User hesitates frequently at {class_name}",
+        })
+
+    haptic_map = {
+        "open_space": "none",
+        "nearby_wall": "continuous_high" if distance < 0.5 else "double_pulse",
+        "doorway": "double_pulse_slow",
+        "corner": "continuous_low",
+        "corridor": "single_pulse",
+        "stairs": "stair_alert",
+    }
+
+    response = {
+        "navigation_instruction": instruction,
+        "confidence_adjustment": adj,
+        "memory_ops": memory_ops,
+        "haptic_pattern": haptic_map.get(class_name, "none"),
+        "reasoning": f"Mock response for {class_name}, action={action}",
+    }
+    return json.dumps(response)
+
+
+class MockAsyncQwenMemoryAgent(AsyncQwenMemoryAgent):
+    """Async mock agent for testing the FastAPI server without API key."""
+
+    async def _call_qwen(self, user_message: str) -> str:
+        return _mock_response_from_context(user_message)

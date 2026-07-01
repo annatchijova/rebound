@@ -100,11 +100,14 @@ def detect_stair_periodicity(
         return result
 
     # PASS 2: extend with weaker peaks at predicted positions
+    MAX_EXPECTED_STEPS = 40
     extended_peaks = list(peaks_strong)
     search_window = int(mean_spacing * search_window_frac)
     next_expected = peaks_strong[-1] + int(mean_spacing)
 
     while next_expected + search_window < len(rir_norm):
+        if len(extended_peaks) >= MAX_EXPECTED_STEPS:
+            break
         start = max(0, next_expected - search_window)
         end = min(len(rir_norm), next_expected + search_window)
         window = rir_norm[start:end]
@@ -144,6 +147,7 @@ def estimate_stair_geometry(
 
     Returns:
         {
+            "n_steps": int,           # number of steps (stored directly)
             "run_total_m": float,     # total horizontal length
             "rise_total_m": float,    # total vertical height
             "tread_m": float,         # tread depth used
@@ -161,6 +165,7 @@ def estimate_stair_geometry(
     riser_m = STAIR_PRIOR["riser_m"]
 
     return {
+        "n_steps": n_steps,
         "run_total_m": round(n_steps * tread_m, 2),
         "rise_total_m": round(n_steps * riser_m, 2),
         "tread_m": round(tread_m, 4),
@@ -208,7 +213,7 @@ def build_stair_message(geometry: dict[str, float | bool], direction: str) -> st
         "Staircase detected. 8 steps.
          Approximate length: 2.3 meters."
     """
-    n_steps = round(geometry["run_total_m"] / geometry["tread_m"])
+    n_steps = geometry["n_steps"]
     run = geometry["run_total_m"]
     rise = geometry["rise_total_m"]
 

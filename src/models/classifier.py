@@ -24,7 +24,7 @@ class ReboundCNN(nn.Module):
         scalars: (batch, 2) — [rt60, spectral_centroid_normalized]
 
     Output:
-        class_logits: (batch, 6) — logits per class
+        class_logits: (batch, n_classes) — logits per class
         distance: (batch, 1) — estimated distance in meters
     """
 
@@ -32,7 +32,7 @@ class ReboundCNN(nn.Module):
         self,
         n_mels: int = 64,
         n_frames: int = 32,
-        n_classes: int = 5,   # era 6
+        n_classes: int = 6,
     ):
         super().__init__()
 

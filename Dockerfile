@@ -2,11 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-server.txt .
+RUN pip install --no-cache-dir -r requirements-server.txt
 
 COPY src/ src/
-COPY data/ data/
+COPY models/checkpoints/best_model.pt models/checkpoints/best_model.pt
 
 EXPOSE 8000
 

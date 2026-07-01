@@ -82,6 +82,9 @@ def generate_fm(
 
     # Exponential sweep: f(t) = f_start * (f_end/f_start)^(t/duration)
     # Instantaneous phase: integral of 2*pi*f(t) dt
+    if abs(f_end - f_start) < 1e-6:
+        raise ValueError("f_end and f_start cannot be equal in an FM sweep")
+
     ratio = f_end / f_start
     beta = duration / np.log(ratio)
     phase = 2 * np.pi * f_start * beta * (np.power(ratio, t / duration) - 1)
@@ -106,13 +109,13 @@ def generate_chirp(
     Returns:
         CF-FM chirp — shape: (n_cf + n_fm,) — float64
     """
-    cf_freq = cf_freq or CHIRP_PARAMS["cf_freq"]
-    fm_start = fm_start or CHIRP_PARAMS["fm_start"]
-    fm_end = fm_end or CHIRP_PARAMS["fm_end"]
-    cf_duration = cf_duration or CHIRP_PARAMS["cf_duration"]
-    fm_duration = fm_duration or CHIRP_PARAMS["fm_duration"]
-    sample_rate = sample_rate or CHIRP_PARAMS["sample_rate"]
-    amplitude = amplitude or CHIRP_PARAMS["amplitude"]
+    cf_freq = CHIRP_PARAMS["cf_freq"] if cf_freq is None else cf_freq
+    fm_start = CHIRP_PARAMS["fm_start"] if fm_start is None else fm_start
+    fm_end = CHIRP_PARAMS["fm_end"] if fm_end is None else fm_end
+    cf_duration = CHIRP_PARAMS["cf_duration"] if cf_duration is None else cf_duration
+    fm_duration = CHIRP_PARAMS["fm_duration"] if fm_duration is None else fm_duration
+    sample_rate = CHIRP_PARAMS["sample_rate"] if sample_rate is None else sample_rate
+    amplitude = CHIRP_PARAMS["amplitude"] if amplitude is None else amplitude
 
     cf = generate_cf(cf_freq, cf_duration, sample_rate, amplitude)
     # cf: (n_cf,) — float64

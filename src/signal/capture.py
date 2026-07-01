@@ -78,15 +78,71 @@ def capture_realtime(
     return recording
 
 
+def calibrate_hardware_latency(
+    sample_rate: int | None = None,
+    n_trials: int = 5,
+) -> int:
+    """Measure hardware round-trip latency in samples.
+
+    Emits a short impulse and measures the delay before it appears
+    in the recording. Averages over n_trials for stability.
+
+    Args:
+        sample_rate: sampling rate
+        n_trials: number of calibration trials
+
+    Returns:
+        Estimated latency in samples
+    """
+    import sounddevice as sd
+
+    sr = sample_rate or CHIRP_PARAMS["sample_rate"]
+    duration_samples = int(0.05 * sr)  # 50 ms calibration signal
+
+    # Short click impulse
+    impulse = np.zeros(duration_samples)
+    impulse[10] = 0.8
+
+    latencies = []
+    for _ in range(n_trials):
+        captured = sd.playrec(
+            impulse.reshape(-1, 1),
+            samplerate=sr,
+            channels=1,
+            dtype="float64",
+            blocking=True,
+        ).flatten()
+
+        # Find first significant energy in captured signal
+        threshold = 0.1 * np.max(np.abs(captured))
+        above = np.where(np.abs(captured) > threshold)[0]
+        if len(above) > 0:
+            latencies.append(int(above[0]))
+
+    if not latencies:
+        return 0
+    return int(np.median(latencies))
+
+
 def emit_and_capture(
     chirp: NDArray[np.float64] | None = None,
     capture_duration_s: float = 0.15,
     sample_rate: int | None = None,
+    hardware_latency_samples: int = 0,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Emit chirp through speaker and capture echo via microphone.
 
     NOTE: Requires hardware with speaker and microphone.
     In the demo, use simulate_capture() instead.
+
+    Args:
+        chirp: chirp signal (None = generate default)
+        capture_duration_s: capture duration in seconds
+        sample_rate: sampling rate
+        hardware_latency_samples: round-trip hardware latency to compensate
+            (measured via calibrate_hardware_latency). The captured signal
+            is shifted left by this amount so the RIR peak reflects true
+            acoustic distance rather than distance + hardware delay.
 
     Returns:
         Tuple (emitted_chirp, captured_echo)
@@ -108,6 +164,10 @@ def emit_and_capture(
         channels=1,
         dtype="float64",
         blocking=True,
-    )
+    ).flatten()
 
-    return chirp, captured.flatten()
+    # Compensate hardware latency
+    if hardware_latency_samples > 0 and hardware_latency_samples < len(captured):
+        captured = captured[hardware_latency_samples:]
+
+    return chirp, captured

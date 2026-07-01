@@ -1,0 +1,6 @@
+data/profiles/
+data/checkpoints/
+__pycache__/
+*.pyc
+.git/
+tests/

@@ -27,7 +27,7 @@ from src.simulation.room_generator import SPACE_CLASSES
 
 def load_model(
     checkpoint_path: str,
-    n_classes: int = 5,   # era 6
+    n_classes: int = 6,
     device: str | None = None,
 ) -> tuple[ReboundCNN, dict[str, float], str]:
     """Load trained model and scaler from checkpoint.
@@ -120,14 +120,30 @@ def predict(
     confidence = float(probs[class_id])
     distance_m = float(dist_pred.squeeze().cpu())
 
-    # El detector corre siempre. El CNN no tiene clase "stairs",
-    # entonces el detector es la única vía de detección de escaleras.
+    # DSP detector runs always as reinforcement for the CNN stairs class.
+    # If CNN predicts stairs, DSP confirms or rejects.
+    # If CNN misses stairs, DSP can still override with high confidence.
     stairs = detect_stair_periodicity(rir, sample_rate=sample_rate)
 
-    # Si el detector confirma escalera con confianza alta, override.
-    if stairs["is_stair"] and stairs["confidence"] >= 0.7:
+    cnn_says_stairs = SPACE_CLASSES[class_id] == "stairs"
+    dsp_says_stairs = stairs["is_stair"] and stairs["confidence"] >= 0.5
+
+    if cnn_says_stairs and dsp_says_stairs:
+        # Both agree: high confidence stairs
+        final_class_name = "stairs"
+        final_confidence = max(confidence, float(stairs["confidence"]))
+        override_applied = False
+    elif dsp_says_stairs and stairs["confidence"] >= 0.7:
+        # DSP detects stairs with high confidence, CNN missed it — override
         final_class_name = "stairs"
         final_confidence = float(stairs["confidence"])
+        override_applied = True
+    elif cnn_says_stairs and not dsp_says_stairs:
+        # CNN says stairs but DSP disagrees — fall back to CNN second choice
+        sorted_indices = np.argsort(probs)[::-1]
+        fallback_id = int(sorted_indices[1]) if len(sorted_indices) > 1 else class_id
+        final_class_name = SPACE_CLASSES[fallback_id]
+        final_confidence = float(probs[fallback_id])
         override_applied = True
     else:
         final_class_name = SPACE_CLASSES[class_id]
