@@ -17,21 +17,15 @@ export class SonarEngine {
   }
 
   async init(backendUrl) {
-    // AudioContext: try all known constructors
-    try {
-      if (window.AudioContext) {
-        this.audioCtx = new window.AudioContext();
-      } else if (window.webkitAudioContext) {
-        this.audioCtx = new window.webkitAudioContext();
-      } else {
-        throw new Error("No AudioContext found. Secure context: " + window.isSecureContext +
-          ". Protocol: " + window.location.protocol);
-      }
-    } catch (e) {
-      throw new Error("Audio init failed: " + e.message +
-        ". Secure: " + window.isSecureContext +
-        ". UA: " + navigator.userAgent.slice(0, 80));
+    // AudioContext: use globalThis to avoid minifier renaming
+    var g = typeof globalThis !== "undefined" ? globalThis : typeof self !== "undefined" ? self : window;
+    var ACtor = g["AudioContext"] || g["webkitAudioContext"];
+    if (!ACtor) {
+      throw new Error("No AudioContext. Keys: " +
+        Object.keys(g).filter(function(k) { return k.toLowerCase().indexOf("audio") >= 0; }).join(",") +
+        ". Secure: " + g.isSecureContext);
     }
+    this.audioCtx = new ACtor();
 
     // Request microphone — don't constrain sampleRate (Safari ignores it)
     this.stream = await navigator.mediaDevices.getUserMedia({
