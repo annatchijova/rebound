@@ -17,16 +17,10 @@ export class SonarEngine {
   }
 
   async init(backendUrl) {
-    // Create AudioContext — try direct construction (Safari won't enumerate it)
-    try {
-      this.audioCtx = new AudioContext();
-    } catch (_e1) {
-      try {
-        this.audioCtx = new webkitAudioContext();
-      } catch (_e2) {
-        throw new Error("AudioContext failed: " + _e1.message + " / " + _e2.message);
-      }
-    }
+    // Access AudioContext via bracket notation — minifier cannot rename string keys
+    var AC = window["AudioContext"] || window["webkitAudioContext"];
+    if (!AC) throw new Error("AudioContext not available");
+    this.audioCtx = new AC();
 
     // Request microphone — don't constrain sampleRate (Safari ignores it)
     this.stream = await navigator.mediaDevices.getUserMedia({
