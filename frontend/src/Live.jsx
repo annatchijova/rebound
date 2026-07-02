@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { SonarEngine, vibrate, GyroReader } from "./sonar.js";
+import { AudioFeedback } from "./audio-feedback.js";
 
 var CLASS_LABELS = {
   open_space: "Open space", nearby_wall: "Nearby wall", doorway: "Doorway",
@@ -16,43 +17,6 @@ var HAPTIC_FOR_CLASS = {
   corner: "continuous_low", corridor: "single_pulse", stairs: "stair_alert",
 };
 
-// TTS — dos vías:
-// speakNow: SOLO dentro del handler del gesto, sin awaits antes. Desbloquea el motor.
-// speak: para después de awaits, con el motor ya desbloqueado por speakNow.
-function speakNow(text) {
-  try {
-    var s = window["speechSynthesis"];
-    if (!s) return;
-    s.resume();
-    var u = new (window["SpeechSynthesisUtterance"])(text);
-    u.lang = "en-US";
-    u.rate = 1.1;
-    s.speak(u);
-  } catch (_) {}
-}
-
-function speak(text) {
-  try {
-    var s = window["speechSynthesis"];
-    if (!s) return;
-    s.cancel();
-    s.resume();
-    var u = new (window["SpeechSynthesisUtterance"])(text);
-    u.lang = "en-US";
-    u.rate = 1.1;
-    setTimeout(function () { s.speak(u); }, 80);
-  } catch (_) {}
-}
-
-function buildSpoken(pred, agentText) {
-  if (agentText) return agentText;
-  if (pred.stair_message) return pred.stair_message;
-  var d = pred.distance_m.toFixed(1);
-  if (pred.class_name === "open_space") return "Clear path.";
-  if (pred.class_name === "stairs") return "Stairs detected.";
-  return (CLASS_LABELS[pred.class_name] || pred.class_name) + ". " + d + " meters.";
-}
-
 export default function Live({ backendUrl }) {
   var [phase, setPhase] = useState("start");
   var [error, setError] = useState("");
@@ -63,54 +27,13 @@ export default function Live({ backendUrl }) {
 
   var engineRef = useRef(null);
   var gyroRef = useRef(null);
-  var scanningRef = useRef(false);
+  var feedbackRef = useRef(null);
   var initRef = useRef(false);
+  var runningRef = useRef(false);
 
-  // INITIALIZE — first tap
-  async function handleStart() {
-    if (initRef.current) return;
-    initRef.current = true;
-    speakNow("Starting");
-    setPhase("init");
-    setError("");
-    var engine = null;
-    try {
-      engine = new SonarEngine();
-      await engine.init(backendUrl);
-      engineRef.current = engine;
-
-      var gyro = new GyroReader();
-      await gyro.start();
-      gyroRef.current = gyro;
-
-      try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch (_) {}
-
-      speak("Ready. Tap to scan.");
-      setPhase("ready");
-    } catch (e) {
-      if (engine) { try { engine.destroy(); } catch (_) {} }
-      initRef.current = false;
-      setError(String(e && e.message ? e.message : e));
-      setPhase("error");
-    }
-  }
-
-  // SCAN — every subsequent tap
-  async function handleTap() {
-    if (phase === "start") { handleStart(); return; }
-    if (phase === "error") {
-      if (!engineRef.current) { handleStart(); return; }
-      setError("");
-      setPhase("ready");
-      return;
-    }
-    if (phase === "init") return;
-    if (scanningRef.current) return;
-    scanningRef.current = true;
-
-    speakNow("Scanning");
-    setPhase("scanning");
-
+  // Single scan cycle
+  async function doScan() {
+    if (!engineRef.current) return;
     try {
       var t0 = Date.now();
       var cap = await engineRef.current.capture();
@@ -119,17 +42,18 @@ export default function Live({ backendUrl }) {
       var ms = Date.now() - t0;
 
       setResult(pred);
-      setAgentResult(null);
       setScanCount(function (c) { return c + 1; });
-      setPhase("result");
+
+      // Audio tone + vibration — instant, no TTS needed
+      if (feedbackRef.current) feedbackRef.current.play(pred.class_name, pred.distance_m);
       vibrate(HAPTIC_FOR_CLASS[pred.class_name] || "single_pulse");
-      speak(buildSpoken(pred, ""));
+
       setDebug(
         pred.class_name + " " + Math.round(pred.confidence * 100) + "% · SNR " +
         pred.snr_db + " dB · " + ms + " ms"
       );
 
-      // Memory agent en segundo plano
+      // Memory agent fire-and-forget
       fetch(backendUrl + "/process", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -141,21 +65,83 @@ export default function Live({ backendUrl }) {
         }),
       })
         .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (data) {
-          if (data) { setAgentResult(data); speak(data.navigation_instruction); }
-        })
-        .catch(function (_) {});
+        .then(function (data) { if (data) setAgentResult(data); })
+        .catch(function () {});
+
     } catch (e) {
+      console.error("Scan error:", e);
+      if (feedbackRef.current) feedbackRef.current.playError();
+    }
+  }
+
+  // Auto-scan loop — runs after init, uses rolling buffer (no suspension)
+  useEffect(function () {
+    if (!runningRef.current) return;
+    var cancelled = false;
+
+    async function loop() {
+      while (runningRef.current && !cancelled) {
+        await doScan();
+        if (!runningRef.current || cancelled) break;
+        // Brief pause between scans
+        await new Promise(function (r) { setTimeout(r, 800); });
+      }
+    }
+    loop();
+
+    return function () { cancelled = true; };
+  }, [phase === "running"]);
+
+  // Start — first tap initializes, then auto-loop begins
+  async function handleStart() {
+    if (initRef.current) return;
+    initRef.current = true;
+    setPhase("init");
+    setError("");
+
+    var engine = null;
+    try {
+      engine = new SonarEngine();
+      await engine.init(backendUrl);
+      engineRef.current = engine;
+
+      // Audio feedback uses the same AudioContext — guaranteed alive
+      feedbackRef.current = new AudioFeedback(engine.audioCtx);
+      feedbackRef.current.playReady();
+
+      var gyro = new GyroReader();
+      await gyro.start();
+      gyroRef.current = gyro;
+
+      try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch (_) {}
+
+      runningRef.current = true;
+      setPhase("running");
+    } catch (e) {
+      if (engine) { try { engine.destroy(); } catch (_) {} }
+      initRef.current = false;
       setError(String(e && e.message ? e.message : e));
       setPhase("error");
-      speak("Error");
     }
-    scanningRef.current = false;
+  }
+
+  // Tap during running: force immediate scan (skip wait)
+  function handleTap() {
+    if (phase === "start" || phase === "error") { handleStart(); return; }
+    // During running, tapping triggers an extra scan immediately
+    if (phase === "running" && engineRef.current) { doScan(); }
+  }
+
+  // Stop on double-tap (future: add gesture)
+  function handleStop() {
+    runningRef.current = false;
+    setPhase("stopped");
   }
 
   // Cleanup
-  useEffect(function() {
-    return function() {
+  useEffect(function () {
+    return function () {
+      runningRef.current = false;
       if (engineRef.current) engineRef.current.destroy();
       if (gyroRef.current) gyroRef.current.stop();
     };
@@ -166,7 +152,7 @@ export default function Live({ backendUrl }) {
   return (
     <div
       onClick={handleTap}
-      onTouchEnd={function(e) { e.preventDefault(); handleTap(); }}
+      onTouchEnd={function (e) { e.preventDefault(); handleTap(); }}
       style={{
         background: "#0A0E1A", color: "#E2E8F0", minHeight: "100vh", width: "100%",
         display: "flex", flexDirection: "column", alignItems: "center",
@@ -179,6 +165,7 @@ export default function Live({ backendUrl }) {
         <span style={{ fontSize: 16, fontWeight: 700, color: "#00D4FF44", letterSpacing: 3 }}>REBOUND</span>
       </div>
 
+      {/* START */}
       {phase === "start" && (
         <>
           <div style={{ fontSize: 28, fontWeight: 700, color: "#00D4FF", letterSpacing: 3, marginBottom: 32 }}>
@@ -190,7 +177,7 @@ export default function Live({ backendUrl }) {
             boxShadow: "0 0 80px #00D4FF44",
           }}>
             <span style={{ color: "#0A0E1A", fontSize: 18, fontWeight: 700, textAlign: "center", padding: 20 }}>
-              TAP ANYWHERE TO START
+              TAP TO START
             </span>
           </div>
         </>
@@ -207,74 +194,57 @@ export default function Live({ backendUrl }) {
         </div>
       )}
 
-      {phase === "scanning" && (
-        <div style={{
-          width: 160, height: 160, borderRadius: "50%",
-          border: "4px solid #00D4FF",
-          animation: "pulse 0.5s ease-in-out infinite",
-          display: "flex", alignItems: "center", justifyContent: "center",
-        }}>
-          <span style={{ color: "#00D4FF", fontSize: 16, fontWeight: 600 }}>SCANNING</span>
-        </div>
-      )}
+      {/* RUNNING — auto-scanning, showing latest result */}
+      {(phase === "running" || phase === "stopped") && (
+        <>
+          {result ? (
+            <div style={{ textAlign: "center", width: "100%", maxWidth: 360 }}>
+              <div style={{ fontSize: 80, fontWeight: 700, color: color, lineHeight: 1 }}>
+                {result.distance_m.toFixed(1)}
+              </div>
+              <div style={{ fontSize: 14, color: "#64748B", marginBottom: 12 }}>meters</div>
+              <div style={{ fontSize: 32, fontWeight: 700, color: color, marginBottom: 16 }}>
+                {CLASS_LABELS[result.class_name] || result.class_name}
+              </div>
 
-      {phase === "ready" && (
-        <div style={{ textAlign: "center" }}>
-          <div style={{
-            width: 160, height: 160, borderRadius: "50%",
-            border: "4px solid #00D4FF33",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            marginBottom: 16,
-          }}>
-            <span style={{ color: "#00D4FF", fontSize: 16 }}>TAP TO SCAN</span>
-          </div>
-          <div style={{ fontSize: 12, color: "#64748B" }}>Tap anywhere on screen</div>
-        </div>
-      )}
+              {result.stair_message && (
+                <div style={{
+                  background: "#1a0505", border: "2px solid #EF444444",
+                  borderRadius: 12, padding: 16, marginBottom: 16,
+                  fontSize: 18, color: "#EF4444", fontWeight: 600,
+                }}>
+                  {result.stair_message}
+                </div>
+              )}
 
-      {phase === "result" && result && (
-        <div style={{ textAlign: "center", width: "100%", maxWidth: 360 }}>
-          <div style={{ fontSize: 80, fontWeight: 700, color: color, lineHeight: 1 }}>
-            {result.distance_m.toFixed(1)}
-          </div>
-          <div style={{ fontSize: 14, color: "#64748B", marginBottom: 12 }}>meters</div>
-
-          <div style={{ fontSize: 32, fontWeight: 700, color: color, marginBottom: 16 }}>
-            {CLASS_LABELS[result.class_name] || result.class_name}
-          </div>
-
-          {result.stair_message && (
+              {agentResult && (
+                <div style={{
+                  background: "#141824", borderRadius: 12, padding: 16,
+                  fontSize: 15, color: "#CBD5E1", lineHeight: 1.6,
+                }}>
+                  {agentResult.navigation_instruction}
+                </div>
+              )}
+            </div>
+          ) : (
             <div style={{
-              background: "#1a0505", border: "2px solid #EF444444",
-              borderRadius: 12, padding: 16, marginBottom: 16,
-              fontSize: 18, color: "#EF4444", fontWeight: 600,
+              width: 140, height: 140, borderRadius: "50%",
+              border: "4px solid #00D4FF",
+              animation: "pulse 0.6s ease-in-out infinite",
+              display: "flex", alignItems: "center", justifyContent: "center",
             }}>
-              {result.stair_message}
+              <span style={{ color: "#00D4FF", fontSize: 14 }}>SCANNING</span>
             </div>
           )}
-
-          {agentResult && (
-            <div style={{
-              background: "#141824", borderRadius: 12, padding: 16,
-              fontSize: 15, color: "#CBD5E1", lineHeight: 1.6,
-              marginBottom: 16,
-            }}>
-              {agentResult.navigation_instruction}
-            </div>
-          )}
-
-          <div style={{ fontSize: 14, color: "#475569", marginTop: 16 }}>
-            tap anywhere to scan again
-          </div>
-        </div>
+        </>
       )}
 
+      {/* Debug + scan count */}
       {scanCount > 0 && (
         <div style={{ position: "fixed", bottom: 8, right: 12 }}>
           <span style={{ fontSize: 10, color: "#333" }}>{scanCount}</span>
         </div>
       )}
-
       {debug && (
         <div style={{ position: "fixed", bottom: 24, left: 0, right: 0, textAlign: "center" }}>
           <span style={{ fontSize: 11, color: "#64748B" }}>{debug}</span>
