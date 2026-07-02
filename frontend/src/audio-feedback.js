@@ -11,12 +11,12 @@ export function AudioFeedback(audioCtx) {
 
 // Sound patterns per class
 var PATTERNS = {
-  open_space:  { freq: 440, type: "sine",     beeps: 1, dur: 0.15 },  // gentle single tone
-  nearby_wall: { freq: 880, type: "square",   beeps: 3, dur: 0.08 },  // rapid high beeps
-  doorway:     { freq: 550, type: "sine",     beeps: 2, dur: 0.12 },  // two-tone
-  corner:      { freq: 660, type: "triangle", beeps: 2, dur: 0.10 },  // medium double
-  corridor:    { freq: 500, type: "sine",     beeps: 1, dur: 0.20 },  // steady medium
-  stairs:      { freq: 770, type: "sawtooth", beeps: 4, dur: 0.06 },  // alarm rapid
+  open_space:  { freq: 440, type: "sine",     beeps: 1, dur: 0.15, vol: 0.15 },  // gentle
+  nearby_wall: { freq: 980, type: "square",   beeps: 4, dur: 0.06, vol: 0.5  },  // LOUD rapid
+  doorway:     { freq: 550, type: "sine",     beeps: 2, dur: 0.12, vol: 0.25 },  // two-tone
+  corner:      { freq: 660, type: "triangle", beeps: 2, dur: 0.10, vol: 0.3  },  // medium
+  corridor:    { freq: 500, type: "sine",     beeps: 1, dur: 0.20, vol: 0.2  },  // steady
+  stairs:      { freq: 880, type: "sawtooth", beeps: 5, dur: 0.05, vol: 0.5  },  // ALARM
 };
 
 AudioFeedback.prototype.play = function(className, distance) {
@@ -35,7 +35,7 @@ AudioFeedback.prototype.play = function(className, distance) {
     var gain = ctx.createGain();
     osc.type = p.type;
     osc.frequency.value = p.freq * pitchMult;
-    gain.gain.setValueAtTime(0.3, start);
+    gain.gain.setValueAtTime(p.vol, start);
     gain.gain.exponentialRampToValueAtTime(0.01, start + p.dur);
     osc.connect(gain);
     gain.connect(ctx.destination);

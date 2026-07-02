@@ -83,8 +83,8 @@ export default function Live({ backendUrl }) {
       while (runningRef.current && !cancelled) {
         await doScan();
         if (!runningRef.current || cancelled) break;
-        // Brief pause between scans
-        await new Promise(function (r) { setTimeout(r, 800); });
+        // Minimal pause — just enough to let UI render
+        await new Promise(function (r) { setTimeout(r, 100); });
       }
     }
     loop();
