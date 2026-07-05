@@ -126,6 +126,22 @@ async def lifespan(app: FastAPI):
 
     _load_model_at_startup()
 
+    if _state.get("model") is not None:
+        try:
+            t0 = time.time()
+            from src.models.inference import predict as _warmup_predict
+            from src.signal.deconvolution import adaptive_wiener as _warmup_wiener
+            _warmup_rir = _warmup_wiener(
+                _state["chirp_ref"], _state["chirp_ref"], snr_estimate_db=20.0
+            )
+            _warmup_predict(
+                _state["model"], _state["scaler"], _warmup_rir,
+                sample_rate=TRAINING_SAMPLE_RATE, device=_state["device"],
+            )
+            logger.info("Model warmup complete in %.0fms", (time.time() - t0) * 1000)
+        except Exception as e:
+            logger.warning("Model warmup failed (non-fatal): %s", e)
+
     yield
     await _state["agent"].close()
 
