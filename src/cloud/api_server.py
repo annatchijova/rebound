@@ -21,14 +21,15 @@ import io
 import logging
 import os
 import re
+import secrets
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -49,10 +50,31 @@ CHECKPOINT_PATH = os.environ.get(
     "REBOUND_CHECKPOINT", "models/checkpoints/best_model.pt"
 )
 
+# --- Security / resource limits (env-configurable) ---
+# Shared demo token. If unset, endpoints run OPEN and a loud warning is logged.
+API_TOKEN = os.environ.get("REBOUND_API_TOKEN", "")
+# /predict payload limits: ~1.5 MB decoded, max 2 s of audio at any sample rate
+MAX_AUDIO_B64_CHARS = int(os.environ.get("REBOUND_MAX_AUDIO_B64", 2_000_000))
+MAX_AUDIO_SECONDS = float(os.environ.get("REBOUND_MAX_AUDIO_SECONDS", 2.0))
+# Bound on distinct users kept in memory (LRU eviction, profile saved to disk)
+MAX_ACTIVE_USERS = int(os.environ.get("REBOUND_MAX_USERS", 200))
+# Concurrent heavy predictions; excess requests get 429 after a short wait
+MAX_CONCURRENT_PREDICT = int(os.environ.get("REBOUND_MAX_CONCURRENT_PREDICT", 4))
+
 _state: dict = {}
 _user_locks: dict[str, asyncio.Lock] = {}
+_user_last_seen: dict[str, float] = {}
+_predict_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PREDICT)
 
 _VALID_USER_ID = re.compile(r'[a-zA-Z0-9_\-]{1,64}')
+
+
+def _check_token(x_api_token: Optional[str]) -> None:
+    """Constant-time shared-token check. No-op if REBOUND_API_TOKEN is unset."""
+    if not API_TOKEN:
+        return
+    if not x_api_token or not secrets.compare_digest(x_api_token, API_TOKEN):
+        raise HTTPException(401, "Invalid or missing X-API-Token header")
 
 
 def _validate_user_id(user_id: str) -> None:
@@ -88,6 +110,15 @@ async def lifespan(app: FastAPI):
         _state["agent"] = AsyncQwenMemoryAgent(api_key=api_key)
     else:
         _state["agent"] = MockAsyncQwenMemoryAgent(api_key="mock")
+        logger.warning("=" * 60)
+        logger.warning("DASHSCOPE_API_KEY not set — using MOCK memory agent.")
+        logger.warning("Navigation instructions are canned, NOT Qwen-generated.")
+        logger.warning("=" * 60)
+        print("[startup] WARNING: MOCK agent active (no DASHSCOPE_API_KEY)", flush=True)
+
+    if not API_TOKEN:
+        logger.warning("REBOUND_API_TOKEN not set — user-data endpoints are OPEN.")
+        print("[startup] WARNING: no API token — /process /session /profile UNAUTHENTICATED", flush=True)
 
     _state["profiles"] = {}
     _state["episodic"] = {}
@@ -106,10 +137,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS: the PWA is served from this same origin, so cross-origin access is
+# only needed for local dev. Set REBOUND_ALLOWED_ORIGINS="https://mydomain.com"
+# in production. Wildcard + credentials is contradictory per spec, so
+# credentials are only allowed with an explicit origin list.
+_origins = [o.strip() for o in os.environ.get("REBOUND_ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_origins,
+    allow_credentials=_origins != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -160,12 +196,37 @@ def _get_user_lock(user_id: str) -> asyncio.Lock:
     return _user_locks[user_id]
 
 
+def _evict_lru_users(keep: str) -> None:
+    """Bound memory: keep at most MAX_ACTIVE_USERS in the state dicts.
+
+    Evicts least-recently-seen users (never `keep`), saving their profile to
+    disk best-effort. Episodic/semantic memory of evicted users is dropped —
+    acceptable for the demo; profiles reload from disk on next visit.
+    """
+    while len(_state["profiles"]) > MAX_ACTIVE_USERS:
+        candidates = [u for u in _user_last_seen if u != keep and u in _state["profiles"]]
+        if not candidates:
+            break
+        oldest = min(candidates, key=lambda u: _user_last_seen[u])
+        try:
+            _state["profiles"][oldest].save()
+        except Exception:
+            logger.exception("Failed saving profile for evicted user %s", oldest)
+        for d in (_state["profiles"], _state["episodic"], _state["semantic"]):
+            d.pop(oldest, None)
+        _user_locks.pop(oldest, None)
+        _user_last_seen.pop(oldest, None)
+        logger.info("Evicted LRU user %s (cap=%d)", oldest, MAX_ACTIVE_USERS)
+
+
 def _get_or_create_user(user_id: str) -> tuple[UserProfile, EpisodicMemory, SemanticMemory]:
     """Get or create user state. Must be called under per-user lock."""
+    _user_last_seen[user_id] = time.time()
     if user_id not in _state["profiles"]:
         _state["profiles"][user_id] = UserProfile.load(user_id)
         _state["episodic"][user_id] = EpisodicMemory()
         _state["semantic"][user_id] = SemanticMemory()
+        _evict_lru_users(keep=user_id)
 
     return (
         _state["profiles"][user_id],
@@ -175,8 +236,12 @@ def _get_or_create_user(user_id: str) -> tuple[UserProfile, EpisodicMemory, Sema
 
 
 @app.post("/process", response_model=ObservationResponse)
-async def process_observation(req: ObservationRequest) -> ObservationResponse:
+async def process_observation(
+    req: ObservationRequest,
+    x_api_token: Optional[str] = Header(default=None, alias="X-API-Token"),
+) -> ObservationResponse:
     """Process a sonar observation and return instructions."""
+    _check_token(x_api_token)
     _validate_user_id(req.user_id)
 
     if req.prediction.class_name not in VALID_CLASS_NAMES:
@@ -237,8 +302,12 @@ async def process_observation(req: ObservationRequest) -> ObservationResponse:
 
 
 @app.get("/profile/{user_id}")
-async def get_profile(user_id: str) -> dict:
+async def get_profile(
+    user_id: str,
+    x_api_token: Optional[str] = Header(default=None, alias="X-API-Token"),
+) -> dict:
     """Return a user's profile."""
+    _check_token(x_api_token)
     _validate_user_id(user_id)
     lock = _get_user_lock(user_id)
     async with lock:
@@ -251,8 +320,12 @@ async def get_profile(user_id: str) -> dict:
 
 
 @app.post("/session")
-async def start_session(req: SessionRequest) -> dict:
+async def start_session(
+    req: SessionRequest,
+    x_api_token: Optional[str] = Header(default=None, alias="X-API-Token"),
+) -> dict:
     """Start a new session for a user."""
+    _check_token(x_api_token)
     _validate_user_id(req.user_id)
     lock = _get_user_lock(req.user_id)
     async with lock:
@@ -296,35 +369,21 @@ class AudioPredictResponse(BaseModel):
     features_summary: dict[str, float]
 
 
-@app.post("/predict", response_model=AudioPredictResponse)
-async def predict_from_audio(req: AudioPredictRequest) -> AudioPredictResponse:
-    """Full prediction pipeline: raw audio → deconvolution → CNN → result.
-
-    The mobile client captures audio after emitting the chirp, encodes the
-    buffer as base64 float64, and sends it here. The server runs the full
-    DSP + ML pipeline and returns the classification.
-    """
-    if _state.get("model") is None:
-        raise HTTPException(503, "Model not loaded — no checkpoint available")
-
+def _run_prediction_pipeline(
+    audio: np.ndarray, sample_rate: int, gyro_pitch_deg: float
+) -> AudioPredictResponse:
+    """Synchronous heavy pipeline — runs in a worker thread, NOT the event loop."""
     from src.models.inference import predict as run_predict
     from src.signal.stairs import estimate_stair_geometry, estimate_stair_direction, build_stair_message
+    from src.features.spectral import extract_features
+    from src.features.geometric import estimate_echo_strength
 
     t_start = time.perf_counter()
-    try:
-        audio_bytes = base64.b64decode(req.audio_base64)
-        dtype = np.float32 if req.audio_dtype == "float32" else np.float64
-        audio = np.frombuffer(audio_bytes, dtype=dtype).astype(np.float64)
-    except Exception as e:
-        raise HTTPException(400, f"Invalid audio data: {e}")
-
-    if len(audio) < 100:
-        raise HTTPException(400, "Audio buffer too short")
 
     # Resample to training sample rate if needed
-    if req.sample_rate != TRAINING_SAMPLE_RATE:
+    if sample_rate != TRAINING_SAMPLE_RATE:
         from scipy.signal import resample
-        n_target = int(len(audio) * TRAINING_SAMPLE_RATE / req.sample_rate)
+        n_target = int(len(audio) * TRAINING_SAMPLE_RATE / sample_rate)
         audio = resample(audio, n_target)
 
     # Deconvolve: captured signal → RIR
@@ -344,23 +403,21 @@ async def predict_from_audio(req: AudioPredictRequest) -> AudioPredictResponse:
     stair_message = ""
     stairs = result.get("stairs_detection", {})
     if stairs.get("is_stair") and result["class_name"] == "stairs":
-        stair_direction = estimate_stair_direction(req.gyroscope_pitch_deg)
+        stair_direction = estimate_stair_direction(gyro_pitch_deg)
         geometry = estimate_stair_geometry(
             stairs["echo_spacing_m"], stairs["n_steps_detected"]
         )
         stair_message = build_stair_message(geometry, stair_direction)
 
     # Extract features summary for /process
-    from src.features.spectral import extract_features
-    from src.features.geometric import estimate_echo_strength
     features = extract_features(rir, sample_rate=TRAINING_SAMPLE_RATE)
     echo_strength = estimate_echo_strength(rir, sample_rate=TRAINING_SAMPLE_RATE)
 
     t_end = time.perf_counter()
     print(
         f"[predict] class={result['class_name']} conf={result['confidence']:.2f} "
-        f"snr={snr_db:.1f}dB n={len(audio)} sr_in={req.sample_rate} "
-        f"dtype={req.audio_dtype} pitch={req.gyroscope_pitch_deg:.0f} "
+        f"snr={snr_db:.1f}dB n={len(audio)} sr_in={sample_rate} "
+        f"pitch={gyro_pitch_deg:.0f} "
         f"t_deconv={(t_deconv - t_start) * 1000:.0f}ms t_total={(t_end - t_start) * 1000:.0f}ms",
         flush=True,
     )
@@ -381,6 +438,51 @@ async def predict_from_audio(req: AudioPredictRequest) -> AudioPredictResponse:
             "echo_strength": echo_strength,
         },
     )
+
+
+@app.post("/predict", response_model=AudioPredictResponse)
+async def predict_from_audio(
+    req: AudioPredictRequest,
+    x_api_token: Optional[str] = Header(default=None, alias="X-API-Token"),
+) -> AudioPredictResponse:
+    """Full prediction pipeline: raw audio → deconvolution → CNN → result.
+
+    The mobile client captures audio after emitting the chirp, encodes the
+    buffer as base64 (float32 or float64), and sends it here. The heavy DSP +
+    ML work runs in a worker thread, bounded by a concurrency semaphore.
+    """
+    _check_token(x_api_token)
+
+    if _state.get("model") is None:
+        raise HTTPException(503, "Model not loaded — no checkpoint available")
+
+    # --- Size limits BEFORE any expensive work ---
+    if len(req.audio_base64) > MAX_AUDIO_B64_CHARS:
+        raise HTTPException(413, "Audio payload too large")
+
+    try:
+        audio_bytes = base64.b64decode(req.audio_base64)
+        dtype = np.float32 if req.audio_dtype == "float32" else np.float64
+        audio = np.frombuffer(audio_bytes, dtype=dtype).astype(np.float64)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid audio data: {e}")
+
+    if len(audio) < 100:
+        raise HTTPException(400, "Audio buffer too short")
+    if len(audio) > MAX_AUDIO_SECONDS * req.sample_rate:
+        raise HTTPException(413, f"Audio longer than {MAX_AUDIO_SECONDS}s limit")
+
+    # --- Bounded concurrency: reject instead of queueing forever ---
+    try:
+        await asyncio.wait_for(_predict_semaphore.acquire(), timeout=3.0)
+    except asyncio.TimeoutError:
+        raise HTTPException(429, "Server busy — retry")
+    try:
+        return await asyncio.to_thread(
+            _run_prediction_pipeline, audio, req.sample_rate, req.gyroscope_pitch_deg
+        )
+    finally:
+        _predict_semaphore.release()
 
 
 @app.get("/chirp")

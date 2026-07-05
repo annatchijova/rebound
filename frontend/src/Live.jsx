@@ -47,7 +47,7 @@ export default function Live({ backendUrl }) {
   var scanCountRef = useRef(0);
   var userIdRef = useRef(null);
 
-  // URL params: ?lang=es|en  ?voice=0  ?user=judge1  ?lat=120 (extra latency ms)
+  // URL params: ?lang=es|en ?voice=0 ?user=judge1 ?lat=120 (ms) ?token=SECRET
   if (userIdRef.current === null) {
     var params = new URLSearchParams(window.location.search);
     userIdRef.current = {
@@ -55,6 +55,7 @@ export default function Live({ backendUrl }) {
       voice: params.get("voice") !== "0",
       user: (params.get("user") || "mobile_user").replace(/[^a-zA-Z0-9_\-]/g, "").slice(0, 64) || "mobile_user",
       lat: parseFloat(params.get("lat")) || 0,
+      token: params.get("token") || "",
     };
   }
 
@@ -66,7 +67,9 @@ export default function Live({ backendUrl }) {
       var t0 = Date.now();
       var cap = await engineRef.current.capture();
       var pitch = gyroRef.current ? gyroRef.current.pitch : 0;
-      var pred = await engineRef.current.predict(backendUrl, cap.audio, cap.sampleRate, pitch);
+      var pred = await engineRef.current.predict(
+        backendUrl, cap.audio, cap.sampleRate, pitch, userIdRef.current.token
+      );
       var ms = Date.now() - t0;
 
       setResult(pred);
@@ -96,9 +99,11 @@ export default function Live({ backendUrl }) {
 
       // Memory agent — throttled: class change or every N scans
       if (classChanged || scanCountRef.current % PROCESS_EVERY_N_SCANS === 0) {
+        var processHeaders = { "Content-Type": "application/json" };
+        if (userIdRef.current.token) processHeaders["X-API-Token"] = userIdRef.current.token;
         fetch(backendUrl + "/process", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: processHeaders,
           body: JSON.stringify({
             user_id: userIdRef.current.user,
             prediction: {

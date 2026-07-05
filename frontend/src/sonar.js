@@ -191,7 +191,7 @@ SonarEngine.prototype.capture = async function () {
   return { audio: result, sampleRate: sr };
 };
 
-SonarEngine.prototype.predict = async function (backendUrl, audio, sampleRate, gyroPitch) {
+SonarEngine.prototype.predict = async function (backendUrl, audio, sampleRate, gyroPitch, apiToken) {
   // Float32 payload — half the upload of float64
   var f32 = audio instanceof Float32Array ? audio : new Float32Array(audio);
   var bytes = new Uint8Array(f32.buffer, f32.byteOffset, f32.byteLength);
@@ -203,9 +203,12 @@ SonarEngine.prototype.predict = async function (backendUrl, audio, sampleRate, g
   }
   var b64 = btoa(binary);
 
+  var headers = { "Content-Type": "application/json" };
+  if (apiToken) headers["X-API-Token"] = apiToken;
+
   var resp = await fetch(backendUrl + "/predict", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: headers,
     body: JSON.stringify({
       audio_base64: b64,
       audio_dtype: "float32",
