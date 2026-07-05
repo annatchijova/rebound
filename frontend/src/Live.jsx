@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
-import { SonarEngine, vibrate, GyroReader } from "./sonar.js";
-import { AudioFeedback } from "./audio-feedback.js";
+import { SonarEngine, vibrate, GyroReader, envDiagnostics } from "./sonar.js";
+import { AudioFeedback, Speech } from "./audio-feedback.js";
 
 var CLASS_LABELS = {
   open_space: "Open space", nearby_wall: "Nearby wall", doorway: "Doorway",
@@ -17,6 +17,15 @@ var HAPTIC_FOR_CLASS = {
   corner: "continuous_low", corridor: "single_pulse", stairs: "stair_alert",
 };
 
+// /process (Qwen agent) is expensive — call it on class change or every N scans
+var PROCESS_EVERY_N_SCANS = 8;
+
+// Visually hidden but visible to screen readers (VoiceOver / TalkBack)
+var SR_ONLY = {
+  position: "absolute", width: 1, height: 1, padding: 0, margin: -1,
+  overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0,
+};
+
 export default function Live({ backendUrl }) {
   var [phase, setPhase] = useState("start");
   var [error, setError] = useState("");
@@ -24,16 +33,35 @@ export default function Live({ backendUrl }) {
   var [scanCount, setScanCount] = useState(0);
   var [agentResult, setAgentResult] = useState(null);
   var [debug, setDebug] = useState("");
+  var [announcement, setAnnouncement] = useState("");
+  var [urgentAnnouncement, setUrgentAnnouncement] = useState("");
 
   var engineRef = useRef(null);
   var gyroRef = useRef(null);
   var feedbackRef = useRef(null);
+  var speechRef = useRef(null);
   var initRef = useRef(false);
   var runningRef = useRef(false);
+  var scanningRef = useRef(false);   // prevents overlapping scans
+  var lastClassRef = useRef("");
+  var scanCountRef = useRef(0);
+  var userIdRef = useRef(null);
+
+  // URL params: ?lang=es|en  ?voice=0  ?user=judge1  ?lat=120 (extra latency ms)
+  if (userIdRef.current === null) {
+    var params = new URLSearchParams(window.location.search);
+    userIdRef.current = {
+      lang: params.get("lang") || "",
+      voice: params.get("voice") !== "0",
+      user: (params.get("user") || "mobile_user").replace(/[^a-zA-Z0-9_\-]/g, "").slice(0, 64) || "mobile_user",
+      lat: parseFloat(params.get("lat")) || 0,
+    };
+  }
 
   // Single scan cycle
   async function doScan() {
-    if (!engineRef.current) return;
+    if (!engineRef.current || scanningRef.current) return;
+    scanningRef.current = true;
     try {
       var t0 = Date.now();
       var cap = await engineRef.current.capture();
@@ -42,39 +70,61 @@ export default function Live({ backendUrl }) {
       var ms = Date.now() - t0;
 
       setResult(pred);
-      setScanCount(function (c) { return c + 1; });
+      scanCountRef.current += 1;
+      setScanCount(scanCountRef.current);
 
-      // Audio tone + vibration — instant, no TTS needed
+      var classChanged = pred.class_name !== lastClassRef.current;
+      lastClassRef.current = pred.class_name;
+
+      // 1. Earcon — instant
       if (feedbackRef.current) feedbackRef.current.play(pred.class_name, pred.distance_m);
+      // 2. Vibration — Android only (iOS has no vibrate API)
       vibrate(HAPTIC_FOR_CLASS[pred.class_name] || "single_pulse");
+      // 3. Speech + screen-reader live region
+      if (speechRef.current) {
+        var phrase = speechRef.current.phraseFor(pred);
+        var isStairs = pred.class_name === "stairs";
+        speechRef.current.say(phrase, { urgent: isStairs && classChanged });
+        if (isStairs) setUrgentAnnouncement(phrase);
+        else setAnnouncement(phrase);
+      }
 
       setDebug(
         pred.class_name + " " + Math.round(pred.confidence * 100) + "% · SNR " +
         pred.snr_db + " dB · " + ms + " ms"
       );
 
-      // Memory agent fire-and-forget
-      fetch(backendUrl + "/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: "mobile_user",
-          prediction: { class_name: pred.class_name, confidence: pred.confidence, distance_m: pred.distance_m },
-          features_summary: pred.features_summary,
-          user_action: "advance", session_id: 1,
-        }),
-      })
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (data) { if (data) setAgentResult(data); })
-        .catch(function () {});
-
+      // Memory agent — throttled: class change or every N scans
+      if (classChanged || scanCountRef.current % PROCESS_EVERY_N_SCANS === 0) {
+        fetch(backendUrl + "/process", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: userIdRef.current.user,
+            prediction: {
+              class_name: pred.class_name,
+              confidence: pred.confidence,
+              distance_m: pred.distance_m,
+            },
+            features_summary: pred.features_summary,
+            user_action: "advance",
+            session_id: 1,
+          }),
+        })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) { if (data) setAgentResult(data); })
+          .catch(function () {});
+      }
     } catch (e) {
       console.error("Scan error:", e);
       if (feedbackRef.current) feedbackRef.current.playError();
+      setDebug("scan error: " + String(e && e.message ? e.message : e));
+    } finally {
+      scanningRef.current = false;
     }
   }
 
-  // Auto-scan loop — runs after init, uses rolling buffer (no suspension)
+  // Auto-scan loop
   useEffect(function () {
     if (!runningRef.current) return;
     var cancelled = false;
@@ -83,8 +133,7 @@ export default function Live({ backendUrl }) {
       while (runningRef.current && !cancelled) {
         await doScan();
         if (!runningRef.current || cancelled) break;
-        // Minimal pause — just enough to let UI render
-        await new Promise(function (r) { setTimeout(r, 100); });
+        await new Promise(function (r) { setTimeout(r, 150); });
       }
     }
     loop();
@@ -92,50 +141,72 @@ export default function Live({ backendUrl }) {
     return function () { cancelled = true; };
   }, [phase === "running"]);
 
-  // Start — first tap initializes, then auto-loop begins
+  /**
+   * Start — everything permission-related happens SYNCHRONOUSLY at the top,
+   * inside the tap's transient activation:
+   *   1. createAndUnlock() — AudioContext resume + silent buffer (iOS unlock)
+   *   2. speech.unlock()   — speechSynthesis unlock (iOS)
+   *   3. gyro.start()      — DeviceOrientationEvent.requestPermission()
+   * Only THEN do we await getUserMedia / fetch.
+   */
   async function handleStart() {
     if (initRef.current) return;
     initRef.current = true;
     setPhase("init");
     setError("");
 
-    var engine = null;
-    try {
-      engine = new SonarEngine();
-      await engine.init(backendUrl);
-      engineRef.current = engine;
+    var engine = new SonarEngine();
+    engine.extraLatencyMs = userIdRef.current.lat;
+    var gyro = new GyroReader();
+    var speech = new Speech(userIdRef.current.lang);
+    speech.enabled = userIdRef.current.voice && speech.supported;
 
-      // Audio feedback uses the same AudioContext — guaranteed alive
+    var gyroPromise = null;
+    try {
+      // --- synchronous, inside the gesture ---
+      engine.createAndUnlock();
+      speech.unlock();
+      gyroPromise = gyro.start(); // fires the iOS permission prompt NOW
+      // --- async from here on ---
+      await engine.init(backendUrl);
+
+      engineRef.current = engine;
+      gyroRef.current = gyro;
+      speechRef.current = speech;
+
       feedbackRef.current = new AudioFeedback(engine.audioCtx);
       feedbackRef.current.playReady();
+      speech.ready();
+      setAnnouncement("Sonar active. Scanning.");
 
-      var gyro = new GyroReader();
-      await gyro.start();
-      gyroRef.current = gyro;
+      if (gyroPromise) gyroPromise.catch(function () {});
 
       try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch (_) {}
 
       runningRef.current = true;
       setPhase("running");
     } catch (e) {
-      if (engine) { try { engine.destroy(); } catch (_) {} }
+      try { engine.destroy(); } catch (_) {}
       initRef.current = false;
-      setError(String(e && e.message ? e.message : e));
+      var msg = String(e && e.message ? e.message : e);
+      // Always append environment diagnostics — lets us debug judges' phones
+      if (msg.indexOf("secureContext") === -1) msg += " — " + envDiagnostics();
+      setError(msg);
+      setAnnouncement("Error: " + msg);
       setPhase("error");
     }
   }
 
-  // Tap during running: force immediate scan (skip wait)
+  // Tap: start / retry / force an extra scan
   function handleTap() {
     if (phase === "start" || phase === "error") { handleStart(); return; }
-    // During running, tapping triggers an extra scan immediately
-    if (phase === "running" && engineRef.current) { doScan(); }
-  }
-
-  // Stop on double-tap (future: add gesture)
-  function handleStop() {
-    runningRef.current = false;
-    setPhase("stopped");
+    if (phase === "running" && engineRef.current) {
+      // Also re-unlocks a suspended context, since taps carry activation
+      if (engineRef.current.audioCtx && engineRef.current.audioCtx.state === "suspended") {
+        try { engineRef.current.audioCtx.resume(); } catch (_) {}
+      }
+      doScan();
+    }
   }
 
   // Cleanup
@@ -144,6 +215,7 @@ export default function Live({ backendUrl }) {
       runningRef.current = false;
       if (engineRef.current) engineRef.current.destroy();
       if (gyroRef.current) gyroRef.current.stop();
+      if (speechRef.current) speechRef.current.stop();
     };
   }, []);
 
@@ -153,6 +225,11 @@ export default function Live({ backendUrl }) {
     <div
       onClick={handleTap}
       onTouchEnd={function (e) { e.preventDefault(); handleTap(); }}
+      role="button"
+      aria-label={
+        phase === "start" ? "Tap to start sonar" :
+        phase === "error" ? "Error. Tap to retry" : "Sonar running. Tap to scan now"
+      }
       style={{
         background: "#0A0E1A", color: "#E2E8F0", minHeight: "100vh", width: "100%",
         display: "flex", flexDirection: "column", alignItems: "center",
@@ -161,11 +238,14 @@ export default function Live({ backendUrl }) {
         WebkitTapHighlightColor: "transparent", padding: 20,
       }}
     >
+      {/* Screen-reader live regions — VoiceOver/TalkBack read these aloud */}
+      <div aria-live="polite" role="status" style={SR_ONLY}>{announcement}</div>
+      <div aria-live="assertive" role="alert" style={SR_ONLY}>{urgentAnnouncement}</div>
+
       <div style={{ position: "fixed", top: 12, left: 0, right: 0, textAlign: "center" }}>
         <span style={{ fontSize: 16, fontWeight: 700, color: "#00D4FF44", letterSpacing: 3 }}>REBOUND</span>
       </div>
 
-      {/* START */}
       {phase === "start" && (
         <>
           <div style={{ fontSize: 28, fontWeight: 700, color: "#00D4FF", letterSpacing: 3, marginBottom: 32 }}>
@@ -194,7 +274,6 @@ export default function Live({ backendUrl }) {
         </div>
       )}
 
-      {/* RUNNING — auto-scanning, showing latest result */}
       {(phase === "running" || phase === "stopped") && (
         <>
           {result ? (
@@ -239,7 +318,6 @@ export default function Live({ backendUrl }) {
         </>
       )}
 
-      {/* Debug + scan count */}
       {scanCount > 0 && (
         <div style={{ position: "fixed", bottom: 8, right: 12 }}>
           <span style={{ fontSize: 10, color: "#333" }}>{scanCount}</span>

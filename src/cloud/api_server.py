@@ -267,7 +267,11 @@ async def start_session(req: SessionRequest) -> dict:
 class AudioPredictRequest(BaseModel):
     """Raw audio from mobile client for server-side prediction."""
     audio_base64: str = Field(
-        description="Base64-encoded float64 PCM audio buffer"
+        description="Base64-encoded PCM audio buffer (dtype per audio_dtype)"
+    )
+    audio_dtype: Literal["float64", "float32"] = Field(
+        default="float64",
+        description="Numeric dtype of the audio buffer. float32 halves upload size."
     )
     sample_rate: int = Field(
         ge=8000, le=96000,
@@ -306,9 +310,11 @@ async def predict_from_audio(req: AudioPredictRequest) -> AudioPredictResponse:
     from src.models.inference import predict as run_predict
     from src.signal.stairs import estimate_stair_geometry, estimate_stair_direction, build_stair_message
 
+    t_start = time.perf_counter()
     try:
         audio_bytes = base64.b64decode(req.audio_base64)
-        audio = np.frombuffer(audio_bytes, dtype=np.float64)
+        dtype = np.float32 if req.audio_dtype == "float32" else np.float64
+        audio = np.frombuffer(audio_bytes, dtype=dtype).astype(np.float64)
     except Exception as e:
         raise HTTPException(400, f"Invalid audio data: {e}")
 
@@ -325,6 +331,7 @@ async def predict_from_audio(req: AudioPredictRequest) -> AudioPredictResponse:
     chirp_ref = _state["chirp_ref"]
     snr_db = estimate_snr(audio)
     rir = adaptive_wiener(audio, chirp_ref, snr_estimate_db=max(snr_db, 1.0))
+    t_deconv = time.perf_counter()
 
     # Run CNN + stair detector
     result = run_predict(
@@ -349,9 +356,12 @@ async def predict_from_audio(req: AudioPredictRequest) -> AudioPredictResponse:
     features = extract_features(rir, sample_rate=TRAINING_SAMPLE_RATE)
     echo_strength = estimate_echo_strength(rir, sample_rate=TRAINING_SAMPLE_RATE)
 
+    t_end = time.perf_counter()
     print(
         f"[predict] class={result['class_name']} conf={result['confidence']:.2f} "
-        f"snr={snr_db:.1f}dB n={len(audio)} sr_in={req.sample_rate} pitch={req.gyroscope_pitch_deg:.0f}",
+        f"snr={snr_db:.1f}dB n={len(audio)} sr_in={req.sample_rate} "
+        f"dtype={req.audio_dtype} pitch={req.gyroscope_pitch_deg:.0f} "
+        f"t_deconv={(t_deconv - t_start) * 1000:.0f}ms t_total={(t_end - t_start) * 1000:.0f}ms",
         flush=True,
     )
 
