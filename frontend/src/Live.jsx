@@ -259,6 +259,13 @@ export default function Live({ backendUrl }) {
             if (speechRef.current) speechRef.current.stop();
             setPhase("stopped");
           }}
+          onTouchEnd={function (e) {
+            e.stopPropagation();
+            e.preventDefault();
+            runningRef.current = false;
+            if (speechRef.current) speechRef.current.stop();
+            setPhase("stopped");
+          }}
           style={{
             position: "fixed", top: 12, right: 12, zIndex: 10,
             background: "#EF4444", color: "#fff", border: "none",
