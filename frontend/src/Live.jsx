@@ -251,6 +251,25 @@ export default function Live({ backendUrl }) {
         <span style={{ fontSize: 16, fontWeight: 700, color: "#00D4FF44", letterSpacing: 3 }}>REBOUND</span>
       </div>
 
+      {phase === "running" && (
+        <button
+          onClick={function (e) {
+            e.stopPropagation();
+            runningRef.current = false;
+            if (speechRef.current) speechRef.current.stop();
+            setPhase("stopped");
+          }}
+          style={{
+            position: "fixed", top: 12, right: 12, zIndex: 10,
+            background: "#EF4444", color: "#fff", border: "none",
+            borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          ⏹ Stop
+        </button>
+      )}
+
       {phase === "start" && (
         <>
           <div style={{ fontSize: 28, fontWeight: 700, color: "#00D4FF", letterSpacing: 3, marginBottom: 32 }}>
