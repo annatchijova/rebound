@@ -91,3 +91,85 @@ documented here, not estimates or design intentions.
 - **EWC (Elastic Weight Consolidation)**: implemented in `future/ewc.py`
   but not integrated. Requires DataLoader from the base model and a
   per-user fine-tuning loop. Deferred to v2.
+
+---
+
+Everything below was found through direct testing on the live deployment,
+not inferred or assumed. Same rule as above: only measured behavior gets
+documented here.
+
+## Frontend build — stale bundle hygiene
+
+- **Symptom**: `static/assets/` contained three different compiled JS
+  bundles from different build runs (`index-CBD68GL-.js`,
+  `index-CkgH8AXO.js`, `index-DmJq3u72.js`) simultaneously, with no
+  cleanup step in the Docker build removing prior builds before copying
+  the new one.
+- **Risk**: if `index.html` ever references a stale bundle hash (e.g. from
+  a build that failed partway, or a manual copy that skipped the full
+  `npm run build` → `docker build` cycle), the server would silently serve
+  old frontend code with no error — the exact same class of "silent
+  fallback" bug this project's `EmbeddingProvider`-equivalent logic
+  elsewhere in the codebase was specifically designed to avoid.
+- **Fix**: clean `static/assets/` (or the whole `static/` output
+  directory) as an explicit step before each frontend build, so exactly
+  one bundle can ever exist at a time.
+
+## iOS Safari — Web Audio API unavailable under Lockdown Mode
+
+- **Symptom**: on iPhone, opening the deployed HTTPS URL produced
+  `Web Audio API missing` with diagnostics showing `secureContext=yes`,
+  `mediaDevices=NO`, `AudioContext=NO`, `speech=no`, `vibrate=no` — every
+  audio/sensor API absent despite a valid TLS certificate.
+- **Root cause, confirmed**: the test device had **Lockdown Mode**
+  enabled (Settings → Privacy & Security → Lockdown Mode), which disables
+  several WebKit APIs regardless of HTTPS validity. With Lockdown Mode
+  off, on the same device, on the same URL, the app worked correctly,
+  including spoken navigation instructions in Spanish (device locale).
+- **Scope**: this is a device configuration constraint, not a REBOUND
+  bug or a certificate problem. It's documented here because it's the
+  kind of failure that looks identical to a broken deployment from the
+  outside, and cost real debugging time before the actual cause (a
+  security setting, not our code) was found.
+
+## Android Chrome — speech synthesis silent
+
+- **Symptom**: on the tested Android device, over HTTPS, with a valid
+  session, the sonar loop runs correctly (scans, classifies, updates the
+  memory agent), but no spoken instruction is ever audible.
+- **Status**: haptic feedback and on-screen text both work correctly on
+  the same device — only `speechSynthesis` output is silent. Root cause
+  not yet isolated (possible causes not yet ruled out: no voices
+  installed for the selected `lang`, browser-level TTS permission,
+  `SpeechSynthesisUtterance` firing before voices are loaded). Documented
+  as a known gap rather than a confirmed root cause, unlike the iOS
+  Lockdown Mode finding above.
+
+## Region latency — measured, not assumed
+
+- Documented in the main README's "Alibaba Cloud" section, but the
+  underlying measurement is repeated here because it belongs with the
+  rest of this file's evidence-based findings: a bare `curl` to `/health`
+  (a route with zero model or Qwen involvement) measured >1s round-trip
+  from the Singapore deployment, dropping to double-digit milliseconds
+  after migrating to US-Virginia. This confirms the bottleneck was
+  network geography, not application code, before any code was changed
+  on that basis.
+
+## `/predict` blocking the event loop (fixed, documented for the record)
+
+- **Symptom before fix**: two concurrent scan requests measurably slowed
+  each other down; the CPU-bound deconvolution + CNN inference pipeline
+  ran synchronously inside `async def predict_from_audio`, so the second
+  request's I/O (including its own response) waited behind the first
+  request's CPU work.
+- **Fix applied**: pipeline extracted into a synchronous function run via
+  `asyncio.to_thread`, gated by a bounded semaphore
+  (`REBOUND_MAX_CONCURRENT_PREDICT`) that returns `429` after a timeout
+  instead of queuing indefinitely.
+- **Residual risk**: the semaphore bound was chosen for demo-scale
+  concurrency (a handful of judges testing at once), not for production
+  load. If `t_total` in server logs grows with concurrency after this
+  fix, the bottleneck has moved to the CNN inference itself, not the
+  event loop, and the semaphore limit — not the threading model — would
+  need adjusting.
