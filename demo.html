@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>REBOUND — Live Demo</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0A0E1A; }
+  * { box-sizing: border-box; }
+  @keyframes sonar-ping { 0% { r: 30; opacity: 0.7; } 100% { r: 120; opacity: 0; } }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+</style>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script>
+  window.addEventListener("error", function (e) {
+    var root = document.getElementById("root");
+    if (root && !root.hasChildNodes()) {
+      root.innerHTML = '<pre style="color:#EF4444;background:#141824;padding:16px;white-space:pre-wrap;font-family:monospace;">Error loading demo: ' + (e.message || e) + '</pre>';
+    }
+  });
+</script>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+(function () {
+"use strict";
+
+var e = React.createElement;
+var useState = React.useState;
+var useEffect = React.useEffect;
+var useRef = React.useRef;
+var useCallback = React.useCallback;
+
+var CLASSES = ["open_space", "nearby_wall", "doorway", "corner", "corridor"];
+var CLASS_LABELS = ["Open space", "Nearby wall", "Doorway", "Corner", "Corridor"];
+var CLASS_COLORS = ["#00D4FF", "#F59E0B", "#10B981", "#F97316", "#A78BFA"];
+
+var SEQUENCE = [
+  { class_id: 0, action: "advance",  dist: 4.2, rt60: 0.45, centroid: 7200, echo: -18 },
+  { class_id: 0, action: "advance",  dist: 3.8, rt60: 0.48, centroid: 7100, echo: -19 },
+  { class_id: 4, action: "advance",  dist: 0.8, rt60: 0.22, centroid: 6800, echo: -8  },
+  { class_id: 4, action: "advance",  dist: 0.9, rt60: 0.20, centroid: 6900, echo: -7  },
+  { class_id: 1, action: "hesitate", dist: 0.6, rt60: 0.12, centroid: 6500, echo: -4  },
+  { class_id: 1, action: "advance",  dist: 0.7, rt60: 0.13, centroid: 6600, echo: -5  },
+  { class_id: 2, action: "hesitate", dist: 0.4, rt60: 0.10, centroid: 6200, echo: -3  },
+  { class_id: 2, action: "advance",  dist: 0.4, rt60: 0.11, centroid: 6300, echo: -3  },
+  { class_id: 3, action: "retreat",  dist: 0.5, rt60: 0.09, centroid: 6100, echo: -2  },
+  { class_id: 3, action: "hesitate", dist: 0.6, rt60: 0.10, centroid: 6200, echo: -3  },
+  { class_id: 4, action: "advance",  dist: 0.8, rt60: 0.21, centroid: 6800, echo: -8  },
+  { class_id: 1, action: "hesitate", dist: 0.7, rt60: 0.14, centroid: 6600, echo: -5  },
+  { class_id: 2, action: "advance",  dist: 0.4, rt60: 0.11, centroid: 6300, echo: -3  },
+  { class_id: 0, action: "advance",  dist: 4.1, rt60: 0.44, centroid: 7100, echo: -17 },
+  { class_id: 3, action: "advance",  dist: 0.6, rt60: 0.10, centroid: 6200, echo: -3  },
+  { class_id: 1, action: "advance",  dist: 0.7, rt60: 0.13, centroid: 6500, echo: -4  },
+  { class_id: 2, action: "advance",  dist: 0.4, rt60: 0.11, centroid: 6300, echo: -3  }
+];
+
+var MOCK_INSTRUCTIONS = [
+  "Open space confirmed. Path clear ahead — advance freely.",
+  "Consistent open environment. No obstacles detected.",
+  "Narrow corridor detected. Maintain center path.",
+  "Corridor confirmed. Lateral walls close — stay centered.",
+  "Wall nearby at 0.6 m. Slow down and verify before advancing.",
+  "Wall obstacle navigated successfully. Learning your hesitation threshold.",
+  "Doorway detected at 0.4 m. Proceed with caution — frame is narrow.",
+  "Doorway crossed. Updating spatial memory for this passage.",
+  "Corner detected. Multiple reflection surfaces — suggest retreat to reorient.",
+  "Corner re-evaluated. Adjusting confidence weights for this geometry.",
+  "Corridor clear. Profile updated from previous hesitation pattern.",
+  "Wall pattern recognized from prior session. Reduced alert threshold applied.",
+  "Doorway — profile indicates growing confidence. Advancing recommended.",
+  "Open space. Extended path clear. Full advance authorized.",
+  "Corner — adapted priors applied. Profile confidence increased.",
+  "Wall — no hesitation triggered. Personalization effective.",
+  "Doorway — confident crossing. Session complete."
+];
+
+var HAPTIC_LABELS = {
+  pulse_slow: "Slow pulse — safe",
+  pulse_fast: "Fast pulse — caution",
+  double_tap: "Double tap — obstacle",
+  long_vibration: "Long vibration — stop",
+  triple_tap: "Triple tap — reorient"
+};
+
+var HAPTICS = [
+  "pulse_slow", "pulse_slow", "pulse_slow", "pulse_slow",
+  "double_tap", "pulse_slow", "double_tap", "pulse_slow",
+  "long_vibration", "double_tap", "pulse_slow", "double_tap",
+  "pulse_slow", "pulse_slow", "pulse_slow", "pulse_slow", "pulse_slow"
+];
+
+var PROFILE_KEYS = ["open", "wall", "door", "corner", "corridor"];
+var PROFILE_NAMES = ["Open space", "Nearby wall", "Doorway", "Corner", "Corridor"];
+
+function SonarViz(props) {
+  var classId = props.classId, ping = props.ping, distance = props.distance;
+  var color = CLASS_COLORS[classId] || "#00D4FF";
+  var rings = [120, 90, 60, 30];
+
+  var ringEls = rings.map(function (r, i) {
+    return e("circle", { key: i, cx: 120, cy: 120, r: r, fill: "none", stroke: "#1E2A3A", strokeWidth: i === 0 ? 1.5 : 0.8 });
+  });
+
+  var children = ringEls.slice();
+  if (ping) {
+    children.push(e("circle", {
+      key: "ping", cx: 120, cy: 120, r: 30, fill: "none", stroke: color, strokeWidth: 2, opacity: 0.7,
+      style: { animation: "sonar-ping 1.2s ease-out forwards" }
+    }));
+  }
+  children.push(e("circle", { key: "dot", cx: 120, cy: 120, r: 8, fill: color, opacity: 0.9 }));
+  children.push(e("line", { key: "line", x1: 120, y1: 112, x2: 120, y2: 20, stroke: color, strokeWidth: 1.5, opacity: 0.5 }));
+  children.push(e("text", { key: "dist", x: 120, y: 210, textAnchor: "middle", fill: "#94A3B8", fontSize: 11 },
+    distance > 0 ? distance.toFixed(1) + " m" : "—"));
+  children.push(e("text", { key: "label", x: 120, y: 228, textAnchor: "middle", fill: color, fontSize: 12, fontWeight: 500 },
+    CLASS_LABELS[classId]));
+
+  return e("svg", { viewBox: "0 0 240 240", style: { width: "100%", maxWidth: 240 } }, children);
+}
+
+function ConfBar(props) {
+  var weights = props.weights;
+  var rows = CLASSES.map(function (cls, i) {
+    return e("div", { key: cls, style: { display: "flex", alignItems: "center", gap: 8 } }, [
+      e("span", { key: "label", style: { fontSize: 10, color: "#64748B", width: 80, flexShrink: 0 } }, CLASS_LABELS[i]),
+      e("div", { key: "track", style: { flex: 1, background: "#1E2A3A", borderRadius: 4, height: 10, overflow: "hidden" } },
+        e("div", { style: {
+          width: Math.min(100, (weights[i] / 2) * 100) + "%",
+          height: "100%",
+          background: CLASS_COLORS[i],
+          borderRadius: 4,
+          transition: "width 0.5s ease",
+          opacity: 0.85
+        } })
+      ),
+      e("span", { key: "val", style: { fontSize: 10, color: CLASS_COLORS[i], width: 32, textAlign: "right" } },
+        weights[i] != null ? weights[i].toFixed(2) : "")
+    ]);
+  });
+  return e("div", { style: { display: "flex", flexDirection: "column", gap: 6 } }, rows);
+}
+
+function HapticIcon(props) {
+  var pattern = props.pattern;
+  var color = pattern === "long_vibration" ? "#EF4444" : pattern === "double_tap" ? "#F59E0B" : "#10B981";
+  return e("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, [
+    e("div", { key: "dot", style: {
+      width: 10, height: 10, borderRadius: "50%", background: color,
+      boxShadow: "0 0 8px " + color, animation: "blink 1s ease-in-out infinite"
+    } }),
+    e("span", { key: "label", style: { fontSize: 12, color: color } }, HAPTIC_LABELS[pattern] || pattern)
+  ]);
+}
+
+function ProfileChart(props) {
+  var data = props.data;
+  var width = 900, height = 120, padL = 28, padR = 8, padT = 8, padB = 18;
+  var maxStep = Math.max(1, SEQUENCE.length);
+
+  function xFor(step) { return padL + ((step - 1) / (maxStep - 1)) * (width - padL - padR); }
+  function yFor(val) { return padT + (1 - Math.min(2, val) / 2) * (height - padT - padB); }
+
+  function buildPath(key) {
+    if (data.length === 0) return "";
+    return data.map(function (d, i) {
+      return (i === 0 ? "M " : "L ") + xFor(d.step).toFixed(1) + " " + yFor(d[key]).toFixed(1);
+    }).join(" ");
+  }
+
+  var gridLines = [0, 0.5, 1, 1.5, 2].map(function (v) {
+    return e("g", { key: v }, [
+      e("line", { key: "l", x1: padL, y1: yFor(v), x2: width - padR, y2: yFor(v), stroke: "#1E2A3A", strokeWidth: 1 }),
+      e("text", { key: "t", x: padL - 6, y: yFor(v) + 3, textAnchor: "end", fill: "#64748B", fontSize: 9 }, v)
+    ]);
+  });
+
+  var paths = PROFILE_KEYS.map(function (key, i) {
+    return e("path", { key: key, d: buildPath(key), fill: "none", stroke: CLASS_COLORS[i], strokeWidth: 1.5, opacity: 0.9 });
+  });
+
+  var dots = [];
+  if (data.length > 0) {
+    var last = data[data.length - 1];
+    dots = PROFILE_KEYS.map(function (key, i) {
+      return e("circle", { key: key, cx: xFor(last.step), cy: yFor(last[key]), r: 3, fill: CLASS_COLORS[i] });
+    });
+  }
+
+  var legend = PROFILE_NAMES.map(function (name, i) {
+    return e("div", { key: name, style: { display: "flex", alignItems: "center", gap: 5 } }, [
+      e("div", { key: "dot", style: { width: 8, height: 8, borderRadius: "50%", background: CLASS_COLORS[i] } }),
+      e("span", { key: "label", style: { fontSize: 10, color: "#64748B" } }, name)
+    ]);
+  });
+
+  return e("div", { style: { overflowX: "auto" } }, [
+    e("svg", { key: "svg", viewBox: "0 0 " + width + " " + height, style: { width: "100%", minWidth: 480, height: 120, display: "block" } },
+      gridLines.concat(paths).concat(dots)),
+    e("div", { key: "legend", style: { display: "flex", gap: 14, flexWrap: "wrap", marginTop: 4 } }, legend)
+  ]);
+}
+
+function ReboundUI() {
+  var backendUrlState = useState("http://localhost:8000");
+  var backendUrl = backendUrlState[0], setBackendUrl = backendUrlState[1];
+  var connectedState = useState(null);
+  var connected = connectedState[0], setConnected = connectedState[1];
+  var stepState = useState(-1);
+  var step = stepState[0], setStep = stepState[1];
+  var pingState = useState(false);
+  var ping = pingState[0], setPing = pingState[1];
+  var profileHistoryState = useState([]);
+  var profileHistory = profileHistoryState[0], setProfileHistory = profileHistoryState[1];
+  var weightsState = useState([1, 1, 1, 1, 1]);
+  var weights = weightsState[0], setWeights = weightsState[1];
+  var episodicCountState = useState(0);
+  var episodicCount = episodicCountState[0], setEpisodicCount = episodicCountState[1];
+  var semanticCountState = useState(0);
+  var semanticCount = semanticCountState[0], setSemanticCount = semanticCountState[1];
+  var instructionState = useState("Start demo to begin navigation session.");
+  var instruction = instructionState[0], setInstruction = instructionState[1];
+  var hapticPatternState = useState("pulse_slow");
+  var hapticPattern = hapticPatternState[0], setHapticPattern = hapticPatternState[1];
+  var loadingState = useState(false);
+  var loading = loadingState[0], setLoading = loadingState[1];
+  var autoPlayState = useState(false);
+  var autoPlay = autoPlayState[0], setAutoPlay = autoPlayState[1];
+  var sessionIdState = useState(1);
+  var sessionId = sessionIdState[0], setSessionId = sessionIdState[1];
+  var memoryOpsState = useState([]);
+  var memoryOps = memoryOpsState[0], setMemoryOps = memoryOpsState[1];
+  var autoRef = useRef(null);
+
+  var current = step >= 0 ? SEQUENCE[step] : null;
+
+  var testConnection = function () {
+    fetch(backendUrl + "/health", { signal: AbortSignal.timeout(3000) })
+      .then(function (r) { setConnected(!!r.ok); })
+      .catch(function () { setConnected(false); });
+  };
+
+  var triggerPing = function () {
+    setPing(false);
+    setTimeout(function () { setPing(true); }, 50);
+    setTimeout(function () { setPing(false); }, 1300);
+  };
+
+  var applyMockStep = function (s) {
+    var obs = SEQUENCE[s];
+    var newWeights = weights.map(function (w, i) {
+      if (i === obs.class_id) {
+        return obs.action === "advance" ? Math.min(2, w + 0.12) : Math.max(0.3, w - 0.08);
+      }
+      return w;
+    });
+    setWeights(newWeights);
+    setInstruction(MOCK_INSTRUCTIONS[s]);
+    setHapticPattern(HAPTICS[s]);
+    setEpisodicCount(s + 1);
+    setSemanticCount(Math.floor(s / 4));
+    setMemoryOps(obs.action === "advance"
+      ? [{ op: "reinforce", key: CLASS_LABELS[obs.class_id] }]
+      : [{ op: "flag", key: CLASS_LABELS[obs.class_id] }]);
+    setProfileHistory(function (prev) {
+      return prev.concat([{
+        step: s + 1,
+        open: +newWeights[0].toFixed(2),
+        wall: +newWeights[1].toFixed(2),
+        door: +newWeights[2].toFixed(2),
+        corner: +newWeights[3].toFixed(2),
+        corridor: +newWeights[4].toFixed(2)
+      }]);
+    });
+  };
+
+  var applyRealStep = function (s) {
+    var obs = SEQUENCE[s];
+    return fetch(backendUrl + "/process", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: "demo_user",
+        prediction: {
+          class_name: CLASSES[obs.class_id],
+          confidence: 0.75 + Math.random() * 0.2,
+          distance_m: obs.dist
+        },
+        features_summary: {
+          rt60: obs.rt60,
+          spectral_centroid: obs.centroid,
+          echo_strength: obs.echo
+        },
+        user_action: obs.action,
+        session_id: sessionId
+      })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        setInstruction(data.navigation_instruction);
+        setHapticPattern(data.haptic_pattern);
+        setMemoryOps((data.memory_ops || []).slice(0, 3));
+        return fetch(backendUrl + "/profile/demo_user");
+      })
+      .then(function (prof) { return prof.json(); })
+      .then(function (pd) {
+        var w = (pd.profile && pd.profile.class_weights) || weights;
+        setWeights(w);
+        setEpisodicCount((pd.episodic_stats && pd.episodic_stats.total) || (s + 1));
+        setSemanticCount((pd.semantic && pd.semantic.length) || Math.floor(s / 4));
+        setProfileHistory(function (prev) {
+          return prev.concat([{
+            step: s + 1,
+            open: +w[0].toFixed(2),
+            wall: +w[1].toFixed(2),
+            door: +w[2].toFixed(2),
+            corner: +w[3].toFixed(2),
+            corridor: +w[4].toFixed(2)
+          }]);
+        });
+      })
+      .catch(function () { applyMockStep(s); });
+  };
+
+  var advance = useCallback(function () {
+    var next = step + 1;
+    if (next >= SEQUENCE.length) { setAutoPlay(false); return Promise.resolve(); }
+    setStep(next);
+    setLoading(true);
+    triggerPing();
+    var p = connected ? applyRealStep(next) : Promise.resolve(applyMockStep(next));
+    return p.then(function () { setLoading(false); });
+  }, [step, connected, weights, backendUrl, sessionId]);
+
+  var reset = function () {
+    setStep(-1);
+    setWeights([1, 1, 1, 1, 1]);
+    setProfileHistory([]);
+    setEpisodicCount(0);
+    setSemanticCount(0);
+    setInstruction("Start demo to begin navigation session.");
+    setHapticPattern("pulse_slow");
+    setMemoryOps([]);
+    setAutoPlay(false);
+    setSessionId(function (s) { return s + 1; });
+  };
+
+  useEffect(function () {
+    if (autoPlay) {
+      autoRef.current = setTimeout(function () { advance(); }, 1800);
+    }
+    return function () { clearTimeout(autoRef.current); };
+  }, [autoPlay, step, advance]);
+
+  var containerStyle = { background: "#0A0E1A", color: "#E2E8F0", minHeight: "100vh", fontFamily: "monospace", padding: 16, boxSizing: "border-box" };
+
+  var header = e("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 } }, [
+    e("div", { key: "title" }, [
+      e("span", { key: "name", style: { fontSize: 20, fontWeight: 700, color: "#00D4FF", letterSpacing: 2 } }, "REBOUND"),
+      e("span", { key: "sub", style: { fontSize: 11, color: "#64748B", marginLeft: 12 } }, "Biomimetic Sonar · Qwen MemoryAgent · Qwen Cloud Hackathon")
+    ]),
+    e("div", { key: "controls", style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } }, [
+      e("input", {
+        key: "url", value: backendUrl, onChange: function (ev) { setBackendUrl(ev.target.value); },
+        style: { background: "#141824", border: "1px solid #1E2A3A", color: "#E2E8F0", borderRadius: 6, padding: "4px 10px", fontSize: 12, width: 200 },
+        placeholder: "http://localhost:8000"
+      }),
+      e("button", {
+        key: "test", onClick: testConnection,
+        style: { background: "#141824", border: "1px solid #1E2A3A", color: "#94A3B8", borderRadius: 6, padding: "4px 12px", fontSize: 12, cursor: "pointer" }
+      }, "Test connection"),
+      e("span", {
+        key: "status",
+        style: { fontSize: 11, color: connected === true ? "#10B981" : connected === false ? "#EF4444" : "#64748B" }
+      }, connected === true ? "● Live backend" : connected === false ? "● Mock mode" : "● Not tested")
+    ])
+  ]);
+
+  var leftPanel = e("div", { style: { background: "#141824", borderRadius: 10, padding: 16, border: "1px solid #1E2A3A" } }, [
+    e("div", { key: "label", style: { fontSize: 11, color: "#64748B", marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 } }, "Sonar"),
+    e(SonarViz, { key: "viz", classId: current ? current.class_id : 0, ping: ping, distance: current ? current.dist : 0 }),
+    e("div", { key: "action", style: { marginTop: 12 } }, [
+      e("div", { key: "l", style: { fontSize: 11, color: "#64748B", marginBottom: 4 } }, "User action"),
+      e("span", {
+        key: "v",
+        style: { fontSize: 13, color: current && current.action === "advance" ? "#10B981" : current && current.action === "retreat" ? "#EF4444" : "#F59E0B", fontWeight: 600 }
+      }, current ? current.action.toUpperCase() : "—")
+    ]),
+    e("div", { key: "rt60", style: { marginTop: 8 } }, [
+      e("div", { key: "l", style: { fontSize: 11, color: "#64748B", marginBottom: 4 } }, "RT60"),
+      e("span", { key: "v", style: { fontSize: 13, color: "#E2E8F0" } }, current ? current.rt60.toFixed(2) + " s" : "—")
+    ])
+  ]);
+
+  var memoryOpsBlock = memoryOps.length > 0 ? e("div", { key: "ops" }, [
+    e("div", { key: "l", style: { fontSize: 11, color: "#64748B", marginBottom: 4 } }, "Memory ops"),
+    e("div", { key: "list" }, memoryOps.map(function (op, i) {
+      return e("div", { key: i, style: { fontSize: 11, color: "#A78BFA" } }, op.op + ": " + (op.key || op.value || ""));
+    }))
+  ]) : null;
+
+  var centerChildren = [
+    e("div", { key: "step", style: { fontSize: 11, color: "#64748B", textTransform: "uppercase", letterSpacing: 1 } },
+      "Navigation · Step " + (step >= 0 ? step + 1 : 0) + "/" + SEQUENCE.length),
+    e("div", { key: "dist", style: { fontSize: 32, fontWeight: 700, color: "#00D4FF", lineHeight: 1 } },
+      current ? current.dist.toFixed(1) + " m" : "— m"),
+    e("div", { key: "instr", style: { flex: 1, fontSize: 13, color: "#CBD5E1", lineHeight: 1.6, background: "#0A0E1A", borderRadius: 8, padding: 12, minHeight: 80 } },
+      loading ? e("span", { style: { color: "#64748B" } }, "Processing...") : instruction),
+    e("div", { key: "haptic" }, [
+      e("div", { key: "l", style: { fontSize: 11, color: "#64748B", marginBottom: 6 } }, "Haptic output"),
+      e(HapticIcon, { key: "icon", pattern: hapticPattern })
+    ])
+  ];
+  if (memoryOpsBlock) centerChildren.push(memoryOpsBlock);
+
+  var centerPanel = e("div", { style: { background: "#141824", borderRadius: 10, padding: 16, border: "1px solid #1E2A3A", display: "flex", flexDirection: "column", gap: 12 } }, centerChildren);
+
+  var rightPanel = e("div", { style: { background: "#141824", borderRadius: 10, padding: 16, border: "1px solid #1E2A3A", display: "flex", flexDirection: "column", gap: 12 } }, [
+    e("div", { key: "label", style: { fontSize: 11, color: "#64748B", textTransform: "uppercase", letterSpacing: 1 } }, "Memory agent · Qwen-Plus"),
+    e("div", { key: "counts", style: { display: "flex", gap: 16 } }, [
+      e("div", { key: "epi" }, [
+        e("div", { key: "l", style: { fontSize: 10, color: "#64748B" } }, "Episodic"),
+        e("div", { key: "v", style: { fontSize: 22, color: "#00D4FF", fontWeight: 700 } }, episodicCount)
+      ]),
+      e("div", { key: "sem" }, [
+        e("div", { key: "l", style: { fontSize: 10, color: "#64748B" } }, "Semantic"),
+        e("div", { key: "v", style: { fontSize: 22, color: "#A78BFA", fontWeight: 700 } }, semanticCount)
+      ])
+    ]),
+    e("div", { key: "priors" }, [
+      e("div", { key: "l", style: { fontSize: 11, color: "#64748B", marginBottom: 8 } }, "Bayesian priors"),
+      e(ConfBar, { key: "bar", weights: weights })
+    ])
+  ]);
+
+  var mainGrid = e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 12 } }, [
+    e("div", { key: "left" }, leftPanel),
+    e("div", { key: "center" }, centerPanel),
+    e("div", { key: "right" }, rightPanel)
+  ]);
+
+  var chartSection = e("div", { style: { background: "#141824", borderRadius: 10, padding: 16, border: "1px solid #1E2A3A", marginBottom: 12 } }, [
+    e("div", { key: "label", style: { fontSize: 11, color: "#64748B", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 } }, "User profile evolution — adaptive Bayesian priors"),
+    e(ProfileChart, { key: "chart", data: profileHistory })
+  ]);
+
+  var controls = e("div", { style: { display: "flex", gap: 8, justifyContent: "center" } }, [
+    e("button", {
+      key: "advance", onClick: advance, disabled: loading || step >= SEQUENCE.length - 1,
+      style: { background: "#00D4FF", color: "#0A0E1A", border: "none", borderRadius: 8, padding: "10px 24px", fontSize: 13, fontWeight: 700, cursor: "pointer", opacity: loading ? 0.5 : 1 }
+    }, step < 0 ? "Start session" : "Next step →"),
+    e("button", {
+      key: "auto", onClick: function () { setAutoPlay(function (a) { return !a; }); }, disabled: step >= SEQUENCE.length - 1,
+      style: { background: autoPlay ? "#F59E0B" : "#141824", color: autoPlay ? "#0A0E1A" : "#94A3B8", border: "1px solid #1E2A3A", borderRadius: 8, padding: "10px 20px", fontSize: 13, cursor: "pointer" }
+    }, autoPlay ? "⏸ Pause" : "▶ Auto"),
+    e("button", {
+      key: "reset", onClick: reset,
+      style: { background: "#141824", color: "#94A3B8", border: "1px solid #1E2A3A", borderRadius: 8, padding: "10px 20px", fontSize: 13, cursor: "pointer" }
+    }, "Reset")
+  ]);
+
+  return e("div", { style: containerStyle }, [
+    e("div", { key: "header" }, header),
+    e("div", { key: "grid" }, mainGrid),
+    e("div", { key: "chart" }, chartSection),
+    e("div", { key: "controls" }, controls)
+  ]);
+}
+
+var root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(e(ReboundUI));
+
+})();
+</script>
+</body>
+</html>

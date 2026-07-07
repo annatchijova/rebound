@@ -65,7 +65,9 @@ an unfamiliar space — is real, and worth building further.
 
 ## Architecture
 
-![REBOUND system architecture](visual/3/architecture_dark.png)
+![REBOUND system architecture](visual/architecture.svg)
+
+![REBOUND system architecture (dark)](visual/3/architecture_dark.png)
 
 ```
   Mobile (PWA)                        Alibaba Cloud ECS
@@ -157,6 +159,11 @@ a prompt.
 | Staircase detector SNR threshold | ~27 dB |
 | Training device | NVIDIA RTX 3090 |
 
+Mel spectrograms extracted from the synthetic dataset — one sample per class,
+showing the acoustic signature the CNN classifier learns to distinguish:
+
+![Mel spectrogram — one sample per class](visual/preview.webp)
+
 All figures above are measured on **simulated** rooms — see
 [Known limitations](#known-limitations--said-plainly-not-buried). Full
 empirical detail: [LIMITATIONS.md](LIMITATIONS.md).
@@ -192,6 +199,17 @@ All endpoints except `/health` require an `X-API-Token` header when
 - **It still needs a phone in your hand.** For someone who already
   navigates with a cane and possibly a guide dog, adding "also hold a phone
   up and tap it" is a real usability cost we haven't solved yet.
+- **Behavioral feedback loop — implemented, not yet wired to the live
+  client.** The full Bayesian personalization pipeline is real and tested:
+  EpisodicMemory, SemanticMemory, UserProfile, and the Qwen Memory Agent
+  all work correctly given a real `user_action`. The gap is a single
+  hardcoded value in `Live.jsx` — `user_action: "advance"` is always sent,
+  regardless of what the user actually did — so the mobile client never
+  exercises the personalization it's built to support. The desktop demo view
+  (`App.jsx`) uses real scripted actions and shows the intended behavior
+  correctly; the mobile client doesn't yet capture the user's real reaction
+  to wire into the same pipeline. This is integration work remaining, not a
+  capability the system lacks.
 
 None of these are hidden from the judges because none of them are
 embarrassing. They're the honest next steps for a project built in days,
