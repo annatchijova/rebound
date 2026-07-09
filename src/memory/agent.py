@@ -401,76 +401,7 @@ class MockQwenMemoryAgent(QwenMemoryAgent):
 
     def _call_qwen(self, user_message: str) -> str:
         """Generate response without calling the API."""
-        context = json.loads(user_message)
-        obs = context["current_observation"]
-        prediction = obs["prediction"]
-        action = obs["user_action"]
-        profile = context["user_profile"]
-
-        class_name = prediction["class"]
-        distance = prediction["distance_m"]
-        confidence = prediction["confidence"]
-
-        instructions = {
-            "open_space": "Open space. No nearby obstacles.",
-            "nearby_wall": f"Wall detected at {distance:.1f} meters ahead.",
-            "doorway": f"Opening detected at {distance:.1f} meters. Doorway.",
-            "corner": f"Corner detected at {distance:.1f} meters.",
-            "corridor": f"Corridor. Lateral walls at {distance:.1f} meters.",
-            "stairs": f"Staircase detected at {distance:.1f} meters ahead.",
-        }
-
-        instruction = instructions.get(class_name, f"{class_name} at {distance:.1f}m")
-
-        # Confidence adjustment based on action
-        adj = {}
-        if action == "hesitate":
-            adj[class_name] = 0.95
-        elif action == "retreat":
-            adj[class_name] = 0.85
-        elif action == "advance":
-            adj[class_name] = 1.05
-
-        # Memory operations
-        memory_ops = [
-            {
-                "op": "store_episodic",
-                "value": f"user {action} at {class_name}@{distance:.1f}m",
-            }
-        ]
-
-        total = profile.get("total_interactions", 0)
-        if total > 0 and total % 10 == 0:
-            memory_ops.append({
-                "op": "decay_episodic",
-                "older_than_sessions": 20,
-            })
-
-        if action == "hesitate":
-            memory_ops.append({
-                "op": "update_semantic",
-                "key": f"difficulty_{class_name}",
-                "value": f"User hesitates frequently at {class_name}",
-            })
-
-        haptic_map = {
-            "open_space": "none",
-            "nearby_wall": "continuous_high" if distance < 0.5 else "double_pulse",
-            "doorway": "double_pulse_slow",
-            "corner": "continuous_low",
-            "corridor": "single_pulse",
-            "stairs": "stair_alert",
-        }
-
-        response = {
-            "navigation_instruction": instruction,
-            "confidence_adjustment": adj,
-            "memory_ops": memory_ops,
-            "haptic_pattern": haptic_map.get(class_name, "none"),
-            "reasoning": f"Mock response for {class_name}, action={action}",
-        }
-
-        return json.dumps(response)
+        return _mock_response_from_context(user_message)
 
 
 def _mock_response_from_context(user_message: str) -> str:
