@@ -50,7 +50,7 @@ def load_model(
         except Exception:
             pass
 
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
 
     model = ReboundCNN(n_classes=n_classes)
     model.load_state_dict(checkpoint["model_state_dict"])
