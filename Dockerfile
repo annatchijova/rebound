@@ -7,6 +7,8 @@ RUN pip install --no-cache-dir -r requirements-server.txt
 
 COPY src/ src/
 COPY static/ static/
+# The public landing page uses the project logo and visual assets.
+COPY visual/ static/visual/
 COPY models/checkpoints/best_model.pt models/checkpoints/best_model.pt
 
 EXPOSE 8000
