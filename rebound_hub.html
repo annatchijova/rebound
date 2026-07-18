@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>REBOUND — Biomimetic Sonar Navigation</title>
+<meta name="description" content="REBOUND — biomimetic sonar navigation for visually impaired users. Global AI Hackathon Series with Qwen Cloud, Track: MemoryAgent." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#01040d; --panel:#0a1020; --ink:#eef2f8; --muted:#8894ab;
+    --cyan:#22d3ee; --line:rgba(136,148,171,.22);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    background:radial-gradient(1200px 700px at 50% -10%,#0b1730 0%,var(--bg) 55%);
+    color:var(--ink);font-family:"Instrument Sans",system-ui,sans-serif;
+    min-height:100vh;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;padding:3rem 1.4rem;text-align:center;
+  }
+  .logo-wrap{
+    width:clamp(180px,42vw,300px);aspect-ratio:1;border-radius:50%;
+    overflow:hidden;margin-bottom:2rem;
+    box-shadow:0 0 0 1px rgba(34,211,238,.25),0 0 70px -10px rgba(34,211,238,.5);
+  }
+  .logo-wrap img{width:100%;height:100%;object-fit:cover;display:block}
+  h1{
+    font-family:"Space Mono",monospace;font-weight:700;letter-spacing:.42em;
+    font-size:clamp(1.5rem,5vw,2.4rem);margin-left:.42em;
+  }
+  h1 b{color:var(--cyan)}
+  .tagline{
+    font-family:"Space Mono",monospace;font-size:.74rem;letter-spacing:.28em;
+    text-transform:uppercase;color:var(--cyan);margin-top:1rem;
+  }
+  .sub{color:var(--muted);max-width:36rem;margin:1.1rem auto 0;line-height:1.6;font-size:1.02rem}
+  .links{
+    display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;
+    margin-top:2.8rem;width:100%;max-width:760px;
+  }
+  .card{
+    display:flex;flex-direction:column;gap:.5rem;text-decoration:none;
+    background:linear-gradient(180deg,rgba(34,211,238,.06),rgba(10,16,32,.6));
+    border:1px solid var(--line);border-radius:16px;padding:1.5rem 1.2rem;
+    color:var(--ink);transition:.2s;text-align:left;
+  }
+  .card:hover{border-color:var(--cyan);transform:translateY(-3px);box-shadow:0 12px 30px -18px rgba(34,211,238,.8)}
+  .card .n{font-family:"Space Mono",monospace;font-size:.68rem;letter-spacing:.24em;color:var(--cyan)}
+  .card .t{font-family:"Space Mono",monospace;font-weight:700;font-size:1.08rem}
+  .card .d{color:var(--muted);font-size:.9rem;line-height:1.5}
+  .card .go{margin-top:.4rem;font-family:"Space Mono",monospace;font-size:.72rem;letter-spacing:.1em;color:var(--cyan)}
+  footer{margin-top:3rem;color:var(--muted);font-family:"Space Mono",monospace;font-size:.7rem;letter-spacing:.16em}
+  footer b{color:var(--ink)}
+  @media(max-width:640px){.links{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+  <div class="logo-wrap"><img src="/visual/3/logo.jpeg" alt="REBOUND biomimetic sonar navigation logo" /></div>
+  <h1>REB<b>O</b>UND</h1>
+  <p class="tagline">Biomimetic sonar navigation</p>
+  <p class="sub">Echolocation on a phone: emit a chirp, hear the echo, and tell a blind user what space lies ahead — walls, doorways, corridors, stairs — before the next step. Built for the <b>Global AI Hackathon Series with Qwen Cloud</b>, Track: MemoryAgent.</p>
+
+  <nav class="links">
+    <a class="card" href="/landing">
+      <span class="n">01 / OVERVIEW</span>
+      <span class="t">The pitch</span>
+      <span class="d">Every phone is a sonar — what REBOUND is, how it works, and what we have today.</span>
+      <span class="go">Open →</span>
+    </a>
+    <a class="card" href="/story">
+      <span class="n">02 / STORY</span>
+      <span class="t">Hear what lies ahead</span>
+      <span class="d">The full five-block narrative: from uncertainty to echolocation to independence.</span>
+      <span class="go">Open →</span>
+    </a>
+    <a class="card" href="/demo">
+      <span class="n">03 / DEMO</span>
+      <span class="t">Interactive demo</span>
+      <span class="d">Watch the Qwen Memory Agent classify spaces and adapt to a user, step by step.</span>
+      <span class="go">Open →</span>
+    </a>
+  </nav>
+
+  <footer>REBOUND &middot; <b>QWEN MEMORY AGENT</b> &middot; ALIBABA CLOUD</footer>
+</body>
+</html>

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="es" class="es">
+<html lang="en" class="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -425,8 +425,7 @@ footer .tag{
     html.lang = l;
     btn.textContent = l === 'es' ? 'EN' : 'ES';
   }
-  var nav = (navigator.language || 'en').slice(0,2);
-  setLang(nav === 'es' ? 'es' : 'en');
+  setLang('en');
   btn.addEventListener('click', function(){
     setLang(html.classList.contains('es') ? 'en' : 'es');
   });

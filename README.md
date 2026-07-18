@@ -1,5 +1,10 @@
 # 🦇 REBOUND — Biomimetic Sonar Navigation
 
+# ▶ [**Live — rebound-olga.vercel.app**](https://rebound-olga.vercel.app)
+
+> One link, one place: a logo hub linking to the pitch, the full story, and the
+> interactive Qwen Memory Agent demo.
+
 ![REBOUND logo](visual/3/logo.jpeg)
 
 ### Built for someone who can't see the wall in front of them, but deserves to know it's there.
@@ -30,6 +35,33 @@ This is not a finished product. It's a hackathon build, made in days, not
 years. But the idea underneath it — that echolocation plus an adaptive
 memory agent could give a blind person a few extra seconds of certainty in
 an unfamiliar space — is real, and worth building further.
+
+---
+
+## See it live
+
+**[rebound-olga.vercel.app](https://rebound-olga.vercel.app)** — the deployed story page,
+end to end: from the human problem, to bat-inspired echolocation, to the Qwen Memory
+Agent that remembers each user.
+
+<table>
+  <tr>
+    <td width="50%"><img src="visual/4/story-01-hero.png" width="100%" alt="Hero — Hear what lies ahead"></td>
+    <td width="50%"><img src="visual/4/story-02-problem.png" width="100%" alt="The human problem"></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="visual/4/story-03-classification.png" width="100%" alt="Sonar classification, not a guess"></td>
+    <td width="50%"><img src="visual/4/story-04-memory-agent.png" width="100%" alt="Qwen Memory Agent live profile"></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="visual/4/story-05-narrative.png" width="100%" alt="The five-block narrative"></td>
+    <td width="50%"><img src="visual/4/story-06-inspiration.png" width="100%" alt="Inspiration — bats navigate with sound"></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="visual/4/story-07-qwen-cloud.png" width="100%" alt="Qwen + Alibaba Cloud"></td>
+    <td width="50%"><img src="visual/4/story-08-finale.png" width="100%" alt="Finale — This is REBOUND"></td>
+  </tr>
+</table>
 
 ---
 
@@ -131,20 +163,34 @@ can do."
 
 ## Qwen Cloud integration
 
-The Memory Agent (`src/memory/agent.py`) uses **Qwen-Plus** via the
-DashScope API, fully asynchronously, to:
-- Reason over sonar observations in natural language
-- Decide which memories to store, update, or forget (selective forgetting)
-- Generate personalized navigation instructions per user
-- Adjust Bayesian confidence priors based on user behavior — advancing,
-  hesitating, retreating
+The Memory Agent (`src/memory/agent.py`) calls **Qwen-Plus** through the
+**DashScope international endpoint** (`dashscope-intl.aliyuncs.com/compatible-mode/v1`,
+OpenAI-compatible `chat/completions`), both synchronously (`QwenMemoryAgent`) and
+asynchronously (`AsyncQwenMemoryAgent` via `httpx.AsyncClient`, non-blocking for the
+FastAPI server). Every call is forced to `response_format: json_object` against a
+fixed schema and retried up to 3 times with exponential backoff.
+
+Qwen is the reasoning brain of the memory system, not a chat add-on. Given the CNN's
+acoustic classification, the current sonar features, the user's episodic/semantic
+memory, and their behavioral signal (advance / hesitate / retreat / ignore), it
+decides in a single structured call:
+- The **navigation instruction** to speak to the user
+- **Confidence adjustments** to the Bayesian priors per space class
+- **Memory operations** — what to store, consolidate, or selectively forget across
+  episodic/semantic/procedural memory
+- The **haptic pattern** to trigger
+
+When `DASHSCOPE_API_KEY` is unset, `MockQwenMemoryAgent`/`MockAsyncQwenMemoryAgent`
+generate deterministic rule-based responses with the same shape, so the pipeline runs
+identically offline for testing and demos.
 
 The backend (`src/cloud/api_server.py`) is deployed on **Alibaba Cloud ECS**
-via Docker, exposing endpoints for audio prediction, observation
-processing, user profiles, and session management, with every LLM call
-guarded against hallucination: multipliers clamped to `[0.1, 10.0]`, values
-size-capped, class names checked against a whitelist before they ever reach
-a prompt.
+(region **US-Virginia**) via Docker, with a Caddy reverse proxy and a real Let's
+Encrypt certificate, exposing endpoints for audio prediction, observation
+processing, user profiles, and session management. Every Qwen response is guarded
+against hallucination before it touches state: confidence multipliers clamped to
+`[0.1, 10.0]`, memory key/value sizes capped, and space-class names checked against
+a whitelist before they ever reach a prompt or get applied.
 
 ---
 
