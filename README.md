@@ -177,6 +177,30 @@ Real deployment means real hardening, and it means being honest when
 something is slow instead of hand-waving it as "cloud latency, nothing we
 can do."
 
+### Proof it ran on Alibaba Cloud
+
+Not a claim — receipts. The stack ran on Alibaba Cloud ECS, first in Singapore
+and then migrated to US-Virginia, with the FastAPI backend serving live
+inference over HTTP.
+
+<table>
+  <tr>
+    <td width="50%"><img src="visual/alibaba/ecs-singapore-nginx.png" width="100%" alt="ECS Workbench, Singapore instance, nginx active and running"></td>
+    <td width="50%"><img src="visual/alibaba/ecs-console-instance.png" width="100%" alt="Alibaba Cloud ECS console showing the running instance"></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="visual/alibaba/ecs-virginia-backend-live-1.png" width="100%" alt="Uvicorn backend live on ECS serving POST /predict"></td>
+    <td width="50%"><img src="visual/alibaba/ecs-virginia-backend-live-2.png" width="100%" alt="Continuous stream of live sonar classifications, all HTTP 200"></td>
+  </tr>
+</table>
+
+<sub>
+<b>1.</b> ECS Workbench — the first instance in <b>Singapore</b> (<code>launch-advisor-20260701</code>): the nginx reverse proxy <b>active (running)</b>.<br>
+<b>2.</b> ECS console — the <b>running</b> instance in <b>US-Virginia</b> (<code>ecs.c9i.large</code>, 2 vCPU / 4 GiB, public IP 47.85.198.176).<br>
+<b>3.</b> The REBOUND FastAPI backend live on that instance — <b>Uvicorn on :8000</b>, "Application startup complete", serving real <code>POST /predict</code> and <code>/process</code> requests.<br>
+<b>4.</b> A continuous stream of live classifications (open space, nearby wall, corner) at ~10–25 ms each — every request <b>HTTP 200 OK</b>.
+</sub>
+
 ---
 
 ## Qwen Cloud integration
