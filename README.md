@@ -482,7 +482,6 @@ the code, design, or technical decisions of this project.
 ![Slide 8](visual/1/REBOUND_pitch-08.png)
 ![Slide 9](visual/1/REBOUND_pitch-09.png)
 ![Slide 10](visual/1/REBOUND_pitch-10.png)
-![Slide 11](visual/1/REBOUND_pitch-11.png)
 
 ---
 
