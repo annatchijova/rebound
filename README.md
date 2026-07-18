@@ -44,6 +44,21 @@ an unfamiliar space — is real, and worth building further.
 end to end: from the human problem, to bat-inspired echolocation, to the Qwen Memory
 Agent that remembers each user.
 
+**[Interactive demo → /demo](https://rebound-olga.vercel.app/demo)** — the ML part, live:
+run a session and watch the Memory Agent learn. The Bayesian priors adapt, episodic
+memory fills and decays, and semantic patterns ("hesitates in doorways", "confident in
+open space") consolidate on screen — the real deterministic memory, in the browser, no
+backend needed.
+
+<p align="center">
+  <img src="visual/memory.png" width="560" alt="Memory Agent after a session: adaptive Bayesian priors, episodic and semantic counts, and consolidated behavioural patterns">
+</p>
+
+<sub>The Memory Agent after a live session: Bayesian priors adapted per space class, 26
+episodes stored, and 6 behavioural patterns consolidated — open space and corridors
+learned as confident, doorways and corners as hesitant. Real deterministic memory,
+computed in the browser.</sub>
+
 <table>
   <tr>
     <td width="50%"><img src="visual/4/story-01-hero.png" width="100%" alt="Hero — Hear what lies ahead"></td>
@@ -245,16 +260,19 @@ All endpoints except `/health` require an `X-API-Token` header when
 - **It still needs a phone in your hand.** For someone who already
   navigates with a cane and possibly a guide dog, adding "also hold a phone
   up and tap it" is a real usability cost we haven't solved yet.
-- **Behavioral feedback loop — implemented, not yet wired to the live
-  client.** The full Bayesian personalization pipeline is real and tested:
-  EpisodicMemory, SemanticMemory, UserProfile, and the Qwen Memory Agent
-  all work correctly given a real `user_action`. The gap is a single
-  hardcoded value in `Live.jsx` — `user_action: "advance"` is always sent,
-  regardless of what the user actually did — so the mobile client never
-  exercises the personalization it's built to support. The desktop demo view
-  (`App.jsx`) uses real scripted actions and shows the intended behavior
-  correctly; the mobile client doesn't yet capture the user's real reaction
-  to wire into the same pipeline. This is integration work remaining, not a
+- **Behavioral feedback loop — now demonstrated end to end in the interactive
+  demo.** The full Bayesian personalization pipeline — EpisodicMemory,
+  SemanticMemory, UserProfile, and the Qwen Memory Agent — is real and tested,
+  and the interactive web demo (`web/`, live at
+  [rebound-olga.vercel.app/demo](https://rebound-olga.vercel.app/demo)) now runs
+  it in the browser: across a session of real `user_action`s the Bayesian priors
+  adapt, episodic memory fills and decays, and semantic patterns consolidate on
+  screen — the same deterministic math as `src/memory/*.py`, client-side, with no
+  backend and no API key (Qwen only phrases the already-computed result). This is
+  the ML personalization finally exercised as a loop, not just unit-tested in
+  isolation. What remains is capturing the user's real reaction on the phone: the
+  mobile client (`Live.jsx`) still hardcodes `user_action: "advance"`, so the
+  on-device loop isn't closed in the field yet. Integration work remaining, not a
   capability the system lacks.
 
 None of these are hidden from the judges because none of them are

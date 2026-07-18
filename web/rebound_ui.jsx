@@ -1,49 +1,74 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import { updateImplicit, EpisodicMemory, consolidateSemantic } from "./memory.js";
 
 const CLASSES = ["open_space", "nearby_wall", "doorway", "corner", "corridor"];
 const CLASS_LABELS = ["Open space", "Nearby wall", "Doorway", "Corner", "Corridor"];
 const CLASS_COLORS = ["#00D4FF", "#F59E0B", "#10B981", "#F97316", "#A78BFA"];
 
+// A single navigation session. Interleaved so the sonar view varies, and long
+// enough that each class crosses the 5-observation floor the real semantic
+// consolidation requires. The behavioural story the memory agent should learn:
+// confident in open space and corridors, hesitant at doorways, retreats at
+// corners, and grows confident with walls over the session.
 const SEQUENCE = [
   { class_id: 0, action: "advance",  dist: 4.2, rt60: 0.45, centroid: 7200, echo: -18 },
-  { class_id: 0, action: "advance",  dist: 3.8, rt60: 0.48, centroid: 7100, echo: -19 },
+  { class_id: 4, action: "advance",  dist: 0.9, rt60: 0.21, centroid: 6850, echo: -8  },
+  { class_id: 2, action: "hesitate", dist: 0.4, rt60: 0.11, centroid: 6300, echo: -3  },
+  { class_id: 1, action: "hesitate", dist: 0.6, rt60: 0.13, centroid: 6550, echo: -4  },
+  { class_id: 3, action: "retreat",  dist: 0.5, rt60: 0.10, centroid: 6150, echo: -3  },
+  { class_id: 0, action: "advance",  dist: 4.0, rt60: 0.46, centroid: 7150, echo: -18 },
+  { class_id: 2, action: "hesitate", dist: 0.4, rt60: 0.10, centroid: 6250, echo: -3  },
   { class_id: 4, action: "advance",  dist: 0.8, rt60: 0.22, centroid: 6800, echo: -8  },
+  { class_id: 1, action: "advance",  dist: 0.7, rt60: 0.13, centroid: 6600, echo: -4  },
+  { class_id: 3, action: "hesitate", dist: 0.6, rt60: 0.10, centroid: 6200, echo: -3  },
+  { class_id: 2, action: "hesitate", dist: 0.4, rt60: 0.11, centroid: 6300, echo: -3  },
+  { class_id: 0, action: "advance",  dist: 4.1, rt60: 0.44, centroid: 7100, echo: -17 },
   { class_id: 4, action: "advance",  dist: 0.9, rt60: 0.20, centroid: 6900, echo: -7  },
-  { class_id: 1, action: "hesitate", dist: 0.6, rt60: 0.12, centroid: 6500, echo: -4  },
-  { class_id: 1, action: "advance",  dist: 0.7, rt60: 0.13, centroid: 6600, echo: -5  },
-  { class_id: 2, action: "hesitate", dist: 0.4, rt60: 0.10, centroid: 6200, echo: -3  },
+  { class_id: 1, action: "advance",  dist: 0.7, rt60: 0.14, centroid: 6500, echo: -5  },
   { class_id: 2, action: "advance",  dist: 0.4, rt60: 0.11, centroid: 6300, echo: -3  },
   { class_id: 3, action: "retreat",  dist: 0.5, rt60: 0.09, centroid: 6100, echo: -2  },
+  { class_id: 0, action: "advance",  dist: 4.3, rt60: 0.45, centroid: 7200, echo: -18 },
+  { class_id: 2, action: "hesitate", dist: 0.4, rt60: 0.10, centroid: 6250, echo: -3  },
+  { class_id: 4, action: "advance",  dist: 0.8, rt60: 0.21, centroid: 6850, echo: -8  },
+  { class_id: 1, action: "advance",  dist: 0.7, rt60: 0.13, centroid: 6600, echo: -4  },
   { class_id: 3, action: "hesitate", dist: 0.6, rt60: 0.10, centroid: 6200, echo: -3  },
-  { class_id: 4, action: "advance",  dist: 0.8, rt60: 0.21, centroid: 6800, echo: -8  },
-  { class_id: 1, action: "hesitate", dist: 0.7, rt60: 0.14, centroid: 6600, echo: -5  },
-  { class_id: 2, action: "advance",  dist: 0.4, rt60: 0.11, centroid: 6300, echo: -3  },
-  { class_id: 0, action: "advance",  dist: 4.1, rt60: 0.44, centroid: 7100, echo: -17 },
-  { class_id: 3, action: "advance",  dist: 0.6, rt60: 0.10, centroid: 6200, echo: -3  },
-  { class_id: 1, action: "advance",  dist: 0.7, rt60: 0.13, centroid: 6500, echo: -4  },
-  { class_id: 2, action: "advance",  dist: 0.4, rt60: 0.11, centroid: 6300, echo: -3  },
+  { class_id: 2, action: "hesitate", dist: 0.4, rt60: 0.11, centroid: 6300, echo: -3  },
+  { class_id: 0, action: "advance",  dist: 4.0, rt60: 0.46, centroid: 7150, echo: -17 },
+  { class_id: 4, action: "advance",  dist: 0.9, rt60: 0.20, centroid: 6900, echo: -8  },
+  { class_id: 1, action: "advance",  dist: 0.7, rt60: 0.13, centroid: 6550, echo: -4  },
+  { class_id: 3, action: "retreat",  dist: 0.5, rt60: 0.09, centroid: 6100, echo: -3  },
+  { class_id: 2, action: "hesitate", dist: 0.4, rt60: 0.10, centroid: 6250, echo: -3  },
+  { class_id: 0, action: "advance",  dist: 4.2, rt60: 0.45, centroid: 7200, echo: -18 },
 ];
 
-const MOCK_INSTRUCTIONS = [
-  "Open space confirmed. Path clear ahead — advance freely.",
-  "Consistent open environment. No obstacles detected.",
-  "Narrow corridor detected. Maintain center path.",
-  "Corridor confirmed. Lateral walls close — stay centered.",
-  "Wall nearby at 0.6 m. Slow down and verify before advancing.",
-  "Wall obstacle navigated successfully. Learning your hesitation threshold.",
-  "Doorway detected at 0.4 m. Proceed with caution — frame is narrow.",
-  "Doorway crossed. Updating spatial memory for this passage.",
-  "Corner detected. Multiple reflection surfaces — suggest retreat to reorient.",
-  "Corner re-evaluated. Adjusting confidence weights for this geometry.",
-  "Corridor clear. Profile updated from previous hesitation pattern.",
-  "Wall pattern recognized from prior session. Reduced alert threshold applied.",
-  "Doorway — profile indicates growing confidence. Advancing recommended.",
-  "Open space. Extended path clear. Full advance authorized.",
-  "Corner — adapted priors applied. Profile confidence increased.",
-  "Wall — no hesitation triggered. Personalization effective.",
-  "Doorway — confident crossing. Session complete.",
-];
+// Snake-case class names, matching the semantic keys the memory core produces
+// (difficulty_doorway, confident_open_space, ...).
+const CLASS_NAME = ["open_space", "nearby_wall", "doorway", "corner", "corridor"];
+const CLASS_PHRASE = ["Open space", "Wall nearby", "Doorway", "Corner", "Corridor"];
+
+// Templated narration derived from the REAL memory state. This is the only place
+// an LLM would slot in (Qwen phrases the same facts when the backend is up); it
+// never changes the sealed numbers — priors, counts and patterns are already fixed.
+function narrate({ classId, action, dist, newKeys, semantic }) {
+  const where = CLASS_PHRASE[classId];
+  const d = dist.toFixed(1);
+  if (newKeys.length) {
+    const e = semantic[newKeys[0]];
+    return `${where} at ${d} m. Memory consolidated — ${e.value.toLowerCase()} (${Math.round(e.rate * 100)}%). Personalizing guidance.`;
+  }
+  const cls = CLASS_NAME[classId];
+  const known = [`difficulty_${cls}`, `retreat_pattern_${cls}`, `confident_${cls}`]
+    .map((k) => semantic[k])
+    .find(Boolean);
+  const base = {
+    advance: `${where} at ${d} m. Path clear — advance.`,
+    hesitate: `${where} at ${d} m. Approach with caution.`,
+    retreat: `${where} at ${d} m. Reorient before proceeding.`,
+    ignore: `${where} at ${d} m.`,
+  }[action];
+  return known ? `${base} (${known.value.toLowerCase()} — profile applied).` : base;
+}
 
 const HAPTIC_LABELS = {
   pulse_slow: "Slow pulse — safe",
@@ -53,12 +78,13 @@ const HAPTIC_LABELS = {
   triple_tap: "Triple tap — reorient",
 };
 
-const HAPTICS = [
-  "pulse_slow","pulse_slow","pulse_slow","pulse_slow",
-  "double_tap","pulse_slow","double_tap","pulse_slow",
-  "long_vibration","double_tap","pulse_slow","double_tap",
-  "pulse_slow","pulse_slow","pulse_slow","pulse_slow","pulse_slow",
-];
+// Haptic pattern derived from the class and the user's action.
+function hapticFor(classId, action) {
+  if (action === "retreat") return "long_vibration"; // stop
+  if (action === "hesitate") return classId === 3 ? "triple_tap" : "double_tap";
+  if (classId === 2) return "double_tap"; // doorway — narrow frame
+  return "pulse_slow"; // open space / corridor / cleared wall
+}
 
 function SonarViz({ classId, ping, distance }) {
   const color = CLASS_COLORS[classId] ?? "#00D4FF";
@@ -164,6 +190,10 @@ export default function ReboundUI() {
   const [sessionId, setSessionId] = useState(1);
   const [memoryOps, setMemoryOps] = useState([]);
   const autoRef = useRef(null);
+  // Real memory state that lives across steps (not just re-render state).
+  const episodicRef = useRef(new EpisodicMemory());
+  const semanticRef = useRef({});
+  const [semanticEntries, setSemanticEntries] = useState({});
 
   const current = step >= 0 ? SEQUENCE[step] : null;
 
@@ -180,23 +210,43 @@ export default function ReboundUI() {
     setTimeout(() => setPing(false), 1300);
   };
 
-  const applyMockStep = (s) => {
+  // Run one step through the REAL deterministic memory core — no backend, no
+  // LLM. Same math as src/memory/*.py; Qwen would only phrase the result.
+  const applyLocalStep = (s) => {
     const obs = SEQUENCE[s];
-    const newWeights = weights.map((w, i) => {
-      if (i === obs.class_id) {
-        return obs.action === "advance" ? Math.min(2, w + 0.12) : Math.max(0.3, w - 0.08);
-      }
-      return w;
-    });
+
+    // 1) Adaptive Bayesian prior — real UserProfile.update_implicit
+    const newWeights = updateImplicit(weights, obs.class_id, obs.action);
     setWeights(newWeights);
-    setInstruction(MOCK_INSTRUCTIONS[s]);
-    setHapticPattern(HAPTICS[s]);
-    setEpisodicCount(s + 1);
-    setSemanticCount(Math.floor(s / 4));
-    setMemoryOps(obs.action === "advance"
-      ? [{ op: "reinforce", key: CLASS_LABELS[obs.class_id] }]
-      : [{ op: "flag", key: CLASS_LABELS[obs.class_id] }]);
-    setProfileHistory(prev => [...prev, {
+
+    // 2) Episodic memory — real store with temporal decay and forgetting
+    const ep = episodicRef.current;
+    ep.store({
+      sessionId,
+      predictionClass: CLASSES[obs.class_id],
+      userAction: obs.action,
+      distanceM: obs.dist,
+      confidence: 0.75,
+    });
+    setEpisodicCount(ep.length);
+
+    // 3) Semantic consolidation — real consolidate_from_episodic
+    const prevKeys = new Set(Object.keys(semanticRef.current));
+    const semantic = consolidateSemantic(ep.episodes);
+    const newKeys = Object.keys(semantic).filter((k) => !prevKeys.has(k));
+    semanticRef.current = semantic;
+    setSemanticEntries(semantic);
+    setSemanticCount(Object.keys(semantic).length);
+
+    // 4) Narration, haptic and memory ops derived from the real state
+    setInstruction(narrate({ classId: obs.class_id, action: obs.action, dist: obs.dist, newKeys, semantic }));
+    setHapticPattern(hapticFor(obs.class_id, obs.action));
+    const ops = [{ op: obs.action === "advance" ? "reinforce" : "flag", key: CLASS_LABELS[obs.class_id] }];
+    for (const k of newKeys) ops.push({ op: "consolidate", key: k });
+    setMemoryOps(ops);
+
+    // 5) Profile evolution chart
+    setProfileHistory((prev) => [...prev, {
       step: s + 1,
       open: +newWeights[0].toFixed(2),
       wall: +newWeights[1].toFixed(2),
@@ -248,7 +298,7 @@ export default function ReboundUI() {
         corridor: +w[4].toFixed(2),
       }]);
     } catch {
-      applyMockStep(s);
+      applyLocalStep(s);
     }
   };
 
@@ -258,7 +308,7 @@ export default function ReboundUI() {
     setStep(next);
     setLoading(true);
     triggerPing();
-    if (connected) { await applyRealStep(next); } else { applyMockStep(next); }
+    if (connected) { await applyRealStep(next); } else { applyLocalStep(next); }
     setLoading(false);
   }, [step, connected, weights]);
 
@@ -268,6 +318,9 @@ export default function ReboundUI() {
     setProfileHistory([]);
     setEpisodicCount(0);
     setSemanticCount(0);
+    episodicRef.current = new EpisodicMemory();
+    semanticRef.current = {};
+    setSemanticEntries({});
     setInstruction("Start demo to begin navigation session.");
     setHapticPattern("pulse_slow");
     setMemoryOps([]);
@@ -302,8 +355,8 @@ export default function ReboundUI() {
           <button onClick={testConnection} style={{ background: "#141824", border: "1px solid #1E2A3A", color: "#94A3B8", borderRadius: 6, padding: "4px 12px", fontSize: 12, cursor: "pointer" }}>
             Test connection
           </button>
-          <span style={{ fontSize: 11, color: connected === true ? "#10B981" : connected === false ? "#EF4444" : "#64748B" }}>
-            {connected === true ? "● Live backend" : connected === false ? "● Mock mode" : "● Not tested"}
+          <span style={{ fontSize: 11, color: connected === true ? "#10B981" : "#00D4FF" }}>
+            {connected === true ? "● Live backend · Qwen" : "● Local memory · deterministic"}
           </span>
         </div>
       </div>
@@ -368,6 +421,28 @@ export default function ReboundUI() {
           <div>
             <div style={{ fontSize: 11, color: "#64748B", marginBottom: 8 }}>Bayesian priors</div>
             <ConfBar weights={weights} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: "#64748B", marginBottom: 8 }}>Learned patterns · semantic memory</div>
+            {Object.keys(semanticEntries).length === 0 ? (
+              <div style={{ fontSize: 11, color: "#475569", fontStyle: "italic" }}>
+                Consolidating — needs 5+ observations of a space.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {Object.entries(semanticEntries).map(([key, e]) => {
+                  const c = key.startsWith("confident_") ? "#10B981"
+                    : key.startsWith("retreat_pattern_") ? "#EF4444" : "#F59E0B";
+                  return (
+                    <div key={key} style={{ display: "flex", alignItems: "center", gap: 8, background: "#0A0E1A", borderRadius: 6, padding: "6px 8px" }}>
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: c, flexShrink: 0 }} />
+                      <span style={{ fontSize: 11, color: "#CBD5E1", flex: 1 }}>{e.value}</span>
+                      <span style={{ fontSize: 11, color: c, fontWeight: 700 }}>{Math.round(e.rate * 100)}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </div>
