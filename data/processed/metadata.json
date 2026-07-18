@@ -1,0 +1,17 @@
+{
+  "n_per_class": 500,
+  "total_samples": 3000,
+  "classes": {
+    "0": "open_space",
+    "1": "nearby_wall",
+    "2": "doorway",
+    "3": "corner",
+    "4": "corridor",
+    "5": "stairs"
+  },
+  "sample_rate": 44100,
+  "n_mels": 64,
+  "n_mfcc": 13,
+  "target_frames": 32,
+  "seed": 42
+}

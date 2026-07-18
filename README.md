@@ -50,6 +50,9 @@ memory fills and decays, and semantic patterns ("hesitates in doorways", "confid
 open space") consolidate on screen — the real deterministic memory, in the browser, no
 backend needed.
 
+**[▶ Watch the walkthrough video](https://www.youtube.com/watch?v=pFYyWHYeHPc)** — the
+Memory Agent learning, end to end.
+
 <p align="center">
   <img src="visual/memory.png" width="560" alt="Memory Agent after a session: adaptive Bayesian priors, episodic and semantic counts, and consolidated behavioural patterns">
 </p>
@@ -326,6 +329,13 @@ export REBOUND_ALLOWED_ORIGINS=https://rebound-olga.duckdns.org
 
 CUDA-capable GPU required for training. CPU is sufficient for inference and
 for the live demo.
+
+**The repo is self-contained.** A fresh clone already ships the trained model
+(`models/checkpoints/best_model.pt`) and the processed dataset
+(`data/processed/`), so you can run inference and the API server without
+regenerating anything — the training step below is only for retraining from
+scratch. The one thing to bring is your own `DASHSCOPE_API_KEY` for Qwen; the
+`/demo` UI and the deterministic memory run with no key at all.
 
 ---
 

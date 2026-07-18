@@ -19,13 +19,8 @@ env/
 *.swp
 *.swo
 
-# Data grandes
-data/raw/*.wav
-data/simulated/*.wav
-data/simulated/*.npy
-data/processed/*.npy
-models/checkpoints/*.pt
-models/checkpoints/*.pth
+# Trained model checkpoints and the processed dataset are committed on purpose,
+# so a fresh clone can run inference and retrain without regenerating anything.
 
 # OS
 .DS_Store
@@ -35,12 +30,7 @@ Thumbs.db
 .env
 *.key
 
-# Dataset y modelos generados
-data/processed/*.npz
-data/processed/*.json
-models/checkpoints/*.json
 rebound.zip
-data/
 frontend/node_modules/
 frontend/node_modules
 web/node_modules/
