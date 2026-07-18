@@ -214,14 +214,25 @@ a whitelist before they ever reach a prompt or get applied.
 
 ## Results
 
+**We built and trained the classifier ourselves.** `ReboundCNN`
+(`src/models/classifier.py`) is a custom multi-task CNN written and trained from
+scratch on our own **NVIDIA RTX 3090** — not a fine-tuned off-the-shelf model. A
+single forward pass produces both the space class and the distance estimate, and
+the trained checkpoint (`models/checkpoints/best_model.pt`) ships in this repo.
+
 | Metric | Value |
 |---|---|
+| Architecture | Custom multi-task CNN — 3 conv blocks (1→16→32→64, Conv2d 3×3 + BatchNorm + ReLU + MaxPool) into a shared FC trunk with two heads |
+| Inputs | Mel spectrogram (1×64×32) fused with 2 acoustic scalars — RT60 and spectral centroid |
+| Outputs | Class head (6-way softmax) + distance head (regression, Softplus) |
+| Parameters | ~296K — small enough to run on CPU, no GPU at inference |
+| Loss / optimizer | CrossEntropy + MSE (multi-task), Adam @ lr 1e-3, ReduceLROnPlateau, early stopping on val loss |
+| Training run | 50 epochs, batch size 64, on an NVIDIA RTX 3090 |
 | CNN classes | 6 (open_space, nearby_wall, doorway, corner, corridor, stairs) |
 | val_accuracy (20% stratified split) | 0.953 |
 | val_distance_MAE | 0.302 m |
 | Tests passing | 88/88 |
 | Staircase detector SNR threshold | ~27 dB |
-| Training device | NVIDIA RTX 3090 |
 
 Mel spectrograms extracted from the synthetic dataset — one sample per class,
 showing the acoustic signature the CNN classifier learns to distinguish:
